@@ -1,0 +1,73 @@
+# p5_io_smoke.in：P5-IO 样例输入文件
+[run] # 运行控制区
+case_name = p5_io_smoke # 算例名称
+phase = P5 # 阶段标识
+stage_order = H,T,E,R,A # 阶段执行顺序
+step_count = 0 # 仅做初始化，不推进时间
+dt_mode = hydro_relaxed # 时间步模式
+cfl = 0.4 # CFL 系数
+output_dir = analysis/output/p5_io_smoke # 输出目录
+
+[mesh] # 网格设置区
+geometry = spherical # 球坐标网格
+radial_cells = 4 # 径向网格数
+theta_cells = 2 # 极角网格数
+phi_cells = 4 # 方位角网格数
+radial_min_cm = 0.0 # 内半径，单位 cm
+radial_max_cm = 1.0e-2 # 外半径，单位 cm
+theta_min = 0.0 # theta 最小值
+theta_max = 3.141592653589793 # theta 最大值
+phi_min = 0.0 # phi 最小值
+phi_max = 6.283185307179586 # phi 最大值
+moving_mesh = true # 启用 ALE moving mesh
+macro_zoning = true # 启用 macro-zoning
+
+[initial_condition] # 初值设置区
+profile_interpolation = linear # 径向 profile 线性插值
+profile_radius_unit = um # profile 半径单位为微米
+outside_profile_policy = hard_fail # profile 不覆盖网格时直接失败
+
+[physics] # 物理模块开关区
+enable_hydro = true # 启用 H 阶段
+enable_thermal = true # 启用 T 阶段
+enable_equilibration = true # 启用 E 阶段
+enable_radiation = true # 启用 R 阶段
+enable_alpha = true # 启用 A 阶段
+
+[radiation] # 辐射设置区
+group_mode = explicit_frequency_groups # 使用显式频群
+group_edges_eV = 1,10,100 # 频群边界，单位 eV
+opacity_provider = tops_dt_tabulated # opacity provider 名称
+radiation_initialization = local_blackbody # 使用本地黑体辐射初值
+radiation_initial_blackbody_scale = 1.0 # 黑体初值缩放
+boundary_model = thesis_marshak_vacuum # 辐射 Marshak 真空边界
+flux_limiter = harmonic_eq_5_209 # harmonic 辐射 flux limiter
+
+[thermal] # 热传导设置区
+kappa_model = lee_more_with_degeneracy # Lee-More 热导模型
+electron_flux_limiter = minmax_old_time_face_effective_kappa # 电子热流 limiter
+
+[alpha] # alpha 设置区
+composition_model = equimolar_dt_from_p2_recovery # 等摩尔 DT 组成假设
+reactivity_model = bosch_hale_dt # Bosch-Hale DT 反应率
+alpha_initialization = zero # alpha 初值为零
+
+[boundaries] # 边界设置区
+inner_radial = scalar_origin_remap_required # 原点 scalar remap
+outer_radial = neumann_zero_flux # 外径向零通量
+theta = scalar_pole_remap_required # 极点 scalar remap
+phi = periodic # phi 周期边界
+
+[output] # 输出设置区
+write_profiles_every = 1 # 传统 profile 输出步数间隔
+write_diagnostics_every = 1 # 传统 diagnostics 输出步数间隔
+write_restart_every = 10 # 旧 restart 输出步数间隔
+write_dec3d_out_every_steps = 1 # 每一步写 dec3d.out
+field_checkpoint_every_steps = 1 # 每一步写常规三维物理量 checkpoint
+field_checkpoint_interval_s = 0.0 # 0 表示不用模拟时间触发常规 checkpoint
+field_checkpoint_prefix = fields # 常规 checkpoint 文件名前缀
+field_checkpoint_format = csv3d # 常规 checkpoint 文本格式
+restart_checkpoint_every_steps = 10 # 每 10 步写可重启 checkpoint
+restart_checkpoint_interval_s = 0.0 # 0 表示不用模拟时间触发 restart checkpoint
+restart_checkpoint_prefix = restart # restart checkpoint 文件名前缀
+restart_checkpoint_format = dec3d_restart_text # restart checkpoint 文本格式

@@ -1,0 +1,72 @@
+# p5_image_profile_p2m0_noale_100ps_256x16x16_mpi12_allstages.in # P2/m=0、无 ALE、MPI12、Release 100ps 正式运行
+[run] # 运行控制参数
+case_name = p5_image_profile_p2m0_noale_100ps_256x16x16_mpi12_allstages # 案例名称
+phase = P5 # 当前阶段为 P5 集成运行
+stage_order = H,T,E,R,A # 执行完整 H/T/E/R/A
+step_count = 83837 # 按 pilot dt=1.1927950432679844e-15 s 推到约 100 ps
+dt_mode = hydro_relaxed # 时间步由 hydro CFL 放宽规则给出
+cfl = 0.50 # 按用户要求使用 CFL=0.5
+output_dir = F:/dec3d/analysis/output/p5_image_profile_p2m0_noale_100ps_256x16x16_mpi12_allstages # 输出目录
+[mesh] # 网格参数
+geometry = spherical # 使用球坐标网格
+radial_cells = 256 # 径向单元数
+theta_cells = 16 # theta 单元数
+phi_cells = 16 # phi 单元数
+radial_min_cm = 0.0 # 内半径，单位 cm
+radial_max_cm = 0.005 # 外半径，单位 cm
+theta_min = 0.0 # theta 最小值
+theta_max = 3.141592653589793 # theta 最大值 pi
+phi_min = 0.0 # phi 最小值
+phi_max = 6.283185307179586 # phi 最大值 2pi
+moving_mesh = false # 按用户要求关闭 ALE moving mesh
+macro_zoning = true # 保持 macro-zoning/PPM 路径
+[initial_condition] # 初值设置
+profile_interpolation = linear # 对 .pro 径向剖面做线性插值
+profile_radius_unit = um # .pro 半径单位为微米
+outside_profile_policy = hard_fail # profile 覆盖不足时直接失败
+[perturbation] # 初始扰动设置
+enabled = true # 启用初始扰动
+type = single_mode_radial_coordinate # 使用旧 Python 路径同口径的径向坐标扰动
+ell = 2 # P2 模态
+m = 0 # 轴对称 m=0
+amplitude = 0.10 # P2 扰动幅度，按 single_mode_p2_3d_100ps thesis hydro 口径
+target = radial_coordinate_cm # 对 tabulated radial profile 的采样半径做扰动
+[physics] # 物理模块开关
+enable_hydro = true # 启用 H
+enable_thermal = true # 启用 T
+enable_equilibration = true # 启用 E
+enable_radiation = true # 启用 R
+enable_alpha = true # 启用 A
+[radiation] # 辐射参数
+group_mode = explicit_frequency_groups # 使用显式频群边界
+group_edges_eV = 1,10,100 # 两个辐射能群
+opacity_provider = tops_dt_tabulated # 使用 TOPS DT opacity
+radiation_initialization = local_blackbody # 初始辐射为局部黑体
+radiation_initial_blackbody_scale = 1.0 # 黑体缩放因子
+boundary_model = thesis_marshak_vacuum # 使用 Marshak 真空边界
+flux_limiter = harmonic_eq_5_209 # 使用 harmonic 辐射 flux limiter
+[thermal] # 热传导参数
+kappa_model = lee_more_with_degeneracy # 使用 Lee-More 热导率
+electron_flux_limiter = minmax_old_time_face_effective_kappa # 使用电子热流 limiter
+[alpha] # alpha 参数
+composition_model = equimolar_dt_from_p2_recovery # 等摩尔 DT closure
+reactivity_model = bosch_hale_dt # Bosch-Hale DT 反应率
+alpha_initialization = zero # alpha 初始能量密度为零
+[boundaries] # 边界设置
+inner_radial = scalar_origin_remap_required # 原点 scalar remap
+outer_radial = neumann_zero_flux # 非辐射外边界零通量
+theta = scalar_pole_remap_required # 极点 scalar remap
+phi = periodic # phi 周期边界
+[output] # 输出设置
+write_profiles_every = 0 # 不使用旧 profile 输出
+write_diagnostics_every = 0 # 不使用旧 diagnostics 输出
+write_restart_every = 0 # 不使用旧 restart 输出
+write_dec3d_out_every_steps = 1 # 每步写 dec3d.out
+field_checkpoint_every_steps = 0 # 不按步数写常规 checkpoint
+field_checkpoint_interval_s = 1.0e-11 # 每 10 ps 写一次常规 checkpoint
+field_checkpoint_prefix = fields # 常规 checkpoint 前缀
+field_checkpoint_format = csv3d # 常规 checkpoint 格式
+restart_checkpoint_every_steps = 0 # 不写 restart checkpoint
+restart_checkpoint_interval_s = 0.0 # 不按时间写 restart checkpoint
+restart_checkpoint_prefix = restart # restart 前缀
+restart_checkpoint_format = dec3d_restart_text # restart 格式

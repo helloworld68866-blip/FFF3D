@@ -1,0 +1,50 @@
+{
+  "case": {
+    "type": "hydro_only",
+    "name": "p1_sedov_spherical_ppm_trial_nr512_br001_p1e8",
+    "case_contract_version": "p1-sedov-v1"
+  },
+  "mesh": {
+    "nr": 512,
+    "ntheta": 8,
+    "nphi": 8,
+    "r_min": 0.0,
+    "r_max": 1.0,
+    "nghost": 3
+  },
+  "runtime": {
+    "t_end_s": 0.002,
+    "max_steps": 1000000,
+    "cfl": 0.5,
+    "dt_min_s": 1.0e-12,
+    "dt_max_s": 1.0e-2
+  },
+  "hydro": {
+    "gamma": 1.6666666667,
+    "ppm_enabled": true,
+    "ale_enabled": false,
+    "macro_zoning_enabled": false
+  },
+  "mpi": {
+    "radial_decomposition": false
+  },
+  "init": {
+    "kind": "sedov_spherical",
+    "rho0": 1.0,
+    "p0": 1.0e-8,
+    "v_r0": 0.0,
+    "v_theta0": 0.0,
+    "v_phi0": 0.0,
+    "blast_energy": 1.0,
+    "blast_radius": 0.01,
+    "electron_energy_fraction": 0.5
+  },
+  "output": {
+    "write_profiles": true,
+    "write_profile_every_n_steps": 20,
+    "write_radial_time_maps": true,
+    "write_shell_maps": true,
+    "write_shock_tracking": true,
+    "write_budget_residual": true
+  }
+}

@@ -1,0 +1,65 @@
+# p5_image_profile_release10_256x16x16_mpi24_allstages.in # 256x16x16、MPI24、完整 H/T/E/R/A、Release 10 步测速
+[run] # 运行控制参数
+case_name = p5_image_profile_release10_256x16x16_mpi24_allstages # 案例名称
+phase = P5 # 当前阶段为 P5 集成运行
+stage_order = H,T,E,R,A # 依次执行水动力、热传导、电子离子平衡、辐射、alpha
+step_count = 10 # Release 测速只跑 10 步
+dt_mode = hydro_relaxed # 时间步由 hydro CFL 放宽规则给出
+cfl = 0.30 # 使用 image profile 配置里的 CFL，不人为改变
+output_dir = F:/dec3d/analysis/output/p5_image_profile_release10_256x16x16_mpi24_allstages # 输出目录
+[mesh] # 网格参数
+geometry = spherical # 使用球坐标网格
+radial_cells = 256 # 径向单元数
+theta_cells = 16 # theta 单元数
+phi_cells = 16 # phi 单元数
+radial_min_cm = 0.0 # 内边界半径，单位 cm
+radial_max_cm = 0.005 # 外边界半径，单位 cm，对应 50 um
+theta_min = 0.0 # theta 最小值
+theta_max = 3.141592653589793 # theta 最大值 pi
+phi_min = 0.0 # phi 最小值
+phi_max = 6.283185307179586 # phi 最大值 2pi
+moving_mesh = true # 启用径向 ALE moving mesh
+macro_zoning = true # 启用 macro-zoning 和 PPM hydro 路径
+[initial_condition] # 初值设置
+profile_interpolation = linear # 对 .pro 径向剖面做线性插值
+profile_radius_unit = um # .pro 半径单位为微米
+outside_profile_policy = hard_fail # 网格中心超出 profile 覆盖范围时直接失败
+[physics] # 物理模块开关
+enable_hydro = true # 启用 H 水动力
+enable_thermal = true # 启用 T 热传导
+enable_equilibration = true # 启用 E 电子离子平衡
+enable_radiation = true # 启用 R 辐射
+enable_alpha = true # 启用 A alpha
+[radiation] # 辐射参数
+group_mode = explicit_frequency_groups # 使用显式频群边界
+group_edges_eV = 1,10,100 # 辐射群边界，单位 eV
+opacity_provider = tops_dt_tabulated # 使用 TOPS DT opacity provider
+radiation_initialization = local_blackbody # 初始辐射能量按 B_g(Te) 局部黑体给出
+radiation_initial_blackbody_scale = 1.0 # 黑体初值缩放系数
+boundary_model = thesis_marshak_vacuum # 外边界使用 Marshak 真空边界
+flux_limiter = harmonic_eq_5_209 # 使用论文 harmonic 辐射 flux limiter
+[thermal] # 热传导参数
+kappa_model = lee_more_with_degeneracy # 使用 Lee-More 退化修正热导率
+electron_flux_limiter = minmax_old_time_face_effective_kappa # 使用 old-time face-effective 电子热流 limiter
+[alpha] # alpha 参数
+composition_model = equimolar_dt_from_p2_recovery # 使用等摩尔 DT composition closure
+reactivity_model = bosch_hale_dt # 使用 Bosch-Hale DT 反应率
+alpha_initialization = zero # alpha 初始能量密度为零
+[boundaries] # 边界设置
+inner_radial = scalar_origin_remap_required # 原点要求 scalar origin remap 语义
+outer_radial = neumann_zero_flux # 非辐射 diffusion 外边界使用零通量
+theta = scalar_pole_remap_required # 极点要求 scalar pole remap 语义
+phi = periodic # phi 方向周期边界
+[output] # 输出设置
+write_profiles_every = 0 # 不使用旧 profile 输出
+write_diagnostics_every = 0 # 不使用旧 diagnostics 输出
+write_restart_every = 0 # 不使用旧 restart 输出
+write_dec3d_out_every_steps = 1 # 每步追加 dec3d.out
+field_checkpoint_every_steps = 0 # 不按步数触发常规 checkpoint
+field_checkpoint_interval_s = 1.0e-13 # 保留原 0.1 ps 触发间隔，10 步内不会触发
+field_checkpoint_prefix = fields # 常规 checkpoint 文件名前缀
+field_checkpoint_format = csv3d # 常规 checkpoint 格式
+restart_checkpoint_every_steps = 0 # 不按步数触发 restart checkpoint
+restart_checkpoint_interval_s = 0.0 # 不按模拟时间触发 restart checkpoint
+restart_checkpoint_prefix = restart # restart checkpoint 文件名前缀
+restart_checkpoint_format = dec3d_restart_text # restart checkpoint 格式

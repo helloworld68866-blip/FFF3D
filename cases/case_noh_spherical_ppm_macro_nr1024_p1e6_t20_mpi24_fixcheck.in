@@ -1,0 +1,58 @@
+﻿# 涓ユ牸鐞冨绉?Noh H-only 楠岃瘉绠椾緥锛涙湰鏂囦欢棰濆鎵撳紑 .his 瑙掑悜骞冲潎寰勫悜鍓栭潰杈撳嚭
+[run] # 杩愯鎺у埗鍖?case_name = case_noh_spherical_ppm_macro_nr1024_p1e6_t20_mpi24_fixcheck # 绠椾緥鍚嶇О锛屼繚鎸佸拰鍘?Noh case 涓€鑷?phase = P5 # 浣跨敤 P5 杈撳叆鍏ュ彛
+stage_order = H # 鍙墽琛屾按鍔ㄥ姏 H 闃舵
+step_count = 5000 # 澶嶇幇鏃?t20 杈撳嚭鍙ｅ緞锛岃繍琛屽埌鐣ヨ秴杩?time_s=2
+dt_mode = hydro_relaxed # 鏃堕棿姝ョ敱 hydro CFL 浼拌
+cfl = 0.50 # Noh 楠岃瘉浣跨敤 CFL=0.5
+output_dir = analysis/output/case_noh_spherical_ppm_macro_nr1024_p1e6_t20_mpi24_fixcheck # 杈撳嚭鐩綍
+
+[mesh] # 缃戞牸鎺у埗鍖?geometry = spherical # 浣跨敤鐞冨潗鏍囩綉鏍?radial_cells = 1024 # 寰勫悜缃戞牸鏁?theta_cells = 8 # 鏋佽缃戞牸鏁?phi_cells = 8 # 鏂逛綅瑙掔綉鏍兼暟
+radial_min_cm = 0.0 # 鍐呭崐寰勶紝鍗曚綅 cm
+radial_max_cm = 1.0 # 澶栧崐寰勶紝鍗曚綅 cm
+theta_min = 0.0 # theta 涓嬬晫
+theta_max = 3.141592653589793 # theta 涓婄晫
+phi_min = 0.0 # phi 涓嬬晫
+phi_max = 6.283185307179586 # phi 涓婄晫
+moving_mesh = false # 鍏抽棴 ALE moving mesh
+macro_zoning = true # 鍚敤 macro-zoning 涓?PPM hydro 璺緞
+
+[initial_condition] # 鍒濆€兼帶鍒跺尯
+profile_interpolation = linear # 寰勫悜 profile 浣跨敤绾挎€ф彃鍊?profile_radius_unit = um # profile 鍗婂緞鍗曚綅涓哄井绫?outside_profile_policy = hard_fail # profile 涓嶈鐩栫綉鏍兼椂鐩存帴澶辫触
+
+[perturbation] # 鍒濆鎵板姩鎺у埗鍖?enabled = false # Noh 鐞冨绉伴獙璇佷笉鍔犳壈鍔?type = none # 鏃犳壈鍔ㄧ被鍨嬪崰浣?ell = 0 # 鏃犳壈鍔ㄦ椂鐞冭皭闃舵暟涓?0
+m = 0 # 鏃犳壈鍔ㄦ椂鏂逛綅妯℃暟涓?0
+amplitude = 0.0 # 鏃犳壈鍔ㄦ尟骞?target = none # 鏃犳壈鍔ㄧ洰鏍囧瓧娈?
+[physics] # 鐗╃悊妯″潡寮€鍏冲尯
+enable_hydro = true # 鍚敤 H 闃舵
+enable_thermal = false # 鍏抽棴 T 闃舵
+enable_equilibration = false # 鍏抽棴 E 闃舵
+enable_radiation = false # 鍏抽棴 R 闃舵
+enable_alpha = false # 鍏抽棴 A 闃舵
+
+[radiation] # 杈愬皠鍒濆鍖栧崰浣嶅尯
+group_mode = explicit_frequency_groups # 浣跨敤鏄惧紡棰戠兢甯冨眬浠ユ弧瓒冲垵濮嬪寲鍣ㄥ悎鍚?group_edges_eV = 1,10 # H-only 楠岃瘉鍙渶瑕佷竴涓崰浣嶈緪灏勭兢
+opacity_provider = tops_dt_tabulated # provider 鍗犱綅锛孒-only 涓嶆墽琛?R 闃舵
+radiation_initialization = zero # 杈愬皠鍒濆€肩疆闆?radiation_initial_blackbody_scale = 1.0 # 榛戜綋缂╂斁鍗犱綅
+boundary_model = thesis_marshak_vacuum # 杈愬皠杈圭晫鍗犱綅锛孒-only 涓嶆墽琛?flux_limiter = harmonic_eq_5_209 # 杈愬皠 limiter 鍗犱綅锛孒-only 涓嶆墽琛?
+[thermal] # 鐑紶瀵奸厤缃崰浣嶅尯
+kappa_model = lee_more_with_degeneracy # 鐑紶瀵兼ā鍨嬪崰浣嶏紝H-only 涓嶆墽琛?electron_flux_limiter = minmax_old_time_face_effective_kappa # 鐢靛瓙鐑祦 limiter 鍗犱綅锛孒-only 涓嶆墽琛?
+[alpha] # alpha 閰嶇疆鍗犱綅鍖?composition_model = equimolar_dt_from_p2_recovery # 绛夋懇灏?DT closure 鍗犱綅
+reactivity_model = bosch_hale_dt # 鍙嶅簲鐜囨ā鍨嬪崰浣嶏紝H-only 涓嶆墽琛?alpha_initialization = zero # alpha 鍒濆€肩疆闆?
+[boundaries] # 杈圭晫鏉′欢鍖?inner_radial = scalar_origin_remap_required # 鍘熺偣浣跨敤 scalar origin remap
+outer_radial = noh_exact_inflow # 澶栬竟鐣屼娇鐢ㄤ弗鏍?spherical Noh exact inflow ghost
+theta = scalar_pole_remap_required # 鏋佺偣浣跨敤 scalar pole remap
+phi = periodic # 鏂逛綅瑙掑懆鏈熻竟鐣?
+[output] # 杈撳嚭鎺у埗鍖?write_profiles_every = 0 # 涓嶅啓鏃?profile 杈撳嚭
+write_diagnostics_every = 0 # 涓嶅啓鏃?diagnostics 杈撳嚭
+write_restart_every = 0 # 涓嶅啓鏃?restart 杈撳嚭
+write_dec3d_out_every_steps = 100 # 姣?100 姝ヨ褰?dec3d.out锛岄伩鍏嶆爣閲忚緭鍑烘嫋鎱㈤暱璺?field_checkpoint_every_steps = 0 # 涓嶆寜姝ユ暟鍐欏父瑙勪笁缁?checkpoint
+field_checkpoint_interval_s = 0.0 # 涓嶆寜妯℃嫙鏃堕棿鍐欏父瑙勪笁缁?checkpoint
+field_checkpoint_prefix = fields # 甯歌 checkpoint 鏂囦欢鍚嶅墠缂€鍗犱綅
+field_checkpoint_format = csv3d # 甯歌 checkpoint 鏍煎紡鍗犱綅
+restart_checkpoint_every_steps = 0 # 涓嶆寜姝ユ暟鍐?restart checkpoint
+restart_checkpoint_interval_s = 0.0 # 涓嶆寜妯℃嫙鏃堕棿鍐?restart checkpoint
+restart_checkpoint_prefix = restart # restart checkpoint 鏂囦欢鍚嶅墠缂€鍗犱綅
+restart_checkpoint_format = dec3d_restart_text # restart checkpoint 鏍煎紡鍗犱綅
+history_profile_interval_s = 0.1 # 姣?0.1 妯℃嫙鏃堕棿鍐欎竴娆¤鍚戝钩鍧囧緞鍚戝墫闈?.his
+history_profile_file = case_noh_spherical_ppm_macro_nr1024_p1e6_t20_mpi24_fixcheck.his # 瑙掑悜骞冲潎鍘嗗彶鍓栭潰杈撳嚭鏂囦欢
+

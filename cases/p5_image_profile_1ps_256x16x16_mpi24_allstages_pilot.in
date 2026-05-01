@@ -1,0 +1,65 @@
+# p5_image_profile_1ps_256x16x16_mpi24_allstages_pilot.in?1 ? pilot????? 1 ps ????
+[run] # ????
+case_name = p5_image_profile_1ps_256x16x16_mpi24_allstages_pilot # ????
+phase = P5 # ????
+stage_order = H,T,E,R,A # ???? H/T/E/R/A ?
+step_count = 1 # pilot ??????? dt_s
+dt_mode = hydro_relaxed # ???? hydro CFL ??
+cfl = 0.30 # ?? image profile ?? CFL??????
+output_dir = F:/dec3d/analysis/output/p5_image_profile_1ps_256x16x16_mpi24_allstages/pilot # pilot ????
+[mesh] # ????
+geometry = spherical # ?????
+radial_cells = 256 # ?????
+theta_cells = 16 # theta ???
+phi_cells = 16 # phi ???
+radial_min_cm = 0.0 # ??? cm
+radial_max_cm = 0.005 # ??? cm??? 50 um
+theta_min = 0.0 # theta ??
+theta_max = 3.141592653589793 # theta ??
+phi_min = 0.0 # phi ??
+phi_max = 6.283185307179586 # phi ??
+moving_mesh = true # ?? ALE moving mesh
+macro_zoning = true # ?? macro zoning / PPM ??
+[initial_condition] # ????
+profile_interpolation = linear # ?? profile ????
+profile_radius_unit = um # profile ???????
+outside_profile_policy = hard_fail # profile ????????
+[physics] # ??????
+enable_hydro = true # H ??
+enable_thermal = true # T ??
+enable_equilibration = true # E ??
+enable_radiation = true # R ??
+enable_alpha = true # A ??
+[radiation] # ????
+group_mode = explicit_frequency_groups # ????
+group_edges_eV = 1,10,100 # ????????? eV
+opacity_provider = tops_dt_tabulated # ?? TOPS DT opacity provider
+radiation_initialization = local_blackbody # ??????????? B_g(Te)
+radiation_initial_blackbody_scale = 1.0 # ????? 1
+boundary_model = thesis_marshak_vacuum # ????? Marshak ????
+flux_limiter = harmonic_eq_5_209 # ?? harmonic flux limiter
+[thermal] # ?????
+kappa_model = lee_more_with_degeneracy # Lee-More ???
+electron_flux_limiter = minmax_old_time_face_effective_kappa # ???? limiter
+[alpha] # alpha ??
+composition_model = equimolar_dt_from_p2_recovery # ??? DT closure
+reactivity_model = bosch_hale_dt # Bosch-Hale DT ???
+alpha_initialization = zero # alpha ????
+[boundaries] # ????
+inner_radial = scalar_origin_remap_required # ?? scalar remap
+outer_radial = neumann_zero_flux # ??? diffusion ??????
+theta = scalar_pole_remap_required # ?? scalar remap
+phi = periodic # phi ????
+[output] # ????
+write_profiles_every = 0 # ?? legacy profile ??
+write_diagnostics_every = 0 # ?? legacy diagnostics ??
+write_restart_every = 0 # ?? legacy restart ??
+write_dec3d_out_every_steps = 1 # ???? dec3d.out
+field_checkpoint_every_steps = 0 # ???????? checkpoint
+field_checkpoint_interval_s = 0.0 # pilot ???????? checkpoint
+field_checkpoint_prefix = fields # ?? checkpoint ????
+field_checkpoint_format = csv3d # ?? checkpoint ??
+restart_checkpoint_every_steps = 0 # ????? restart checkpoint
+restart_checkpoint_interval_s = 0.0 # ????? restart checkpoint
+restart_checkpoint_prefix = restart # restart checkpoint ??
+restart_checkpoint_format = dec3d_restart_text # restart checkpoint ??

@@ -1,0 +1,65 @@
+# p5_image_profile_noale_1step_probe_256x16x16_mpi12_allstages.in # no-ALE 无扰动 1 步 probe
+[run] # 运行控制参数
+case_name = p5_image_profile_noale_1step_probe_256x16x16_mpi12_allstages # 案例名称
+phase = P5 # 当前阶段为 P5
+stage_order = H,T,E,R,A # 完整阶段
+step_count = 1 # 只跑 1 步
+dt_mode = hydro_relaxed # hydro CFL 时间步
+cfl = 0.50 # CFL=0.5
+output_dir = F:/dec3d/analysis/output/p5_image_profile_noale_1step_probe_256x16x16_mpi12_allstages # 输出目录
+[mesh] # 网格参数
+geometry = spherical # 球坐标
+radial_cells = 256 # 径向单元数
+theta_cells = 16 # theta 单元数
+phi_cells = 16 # phi 单元数
+radial_min_cm = 0.0 # 内半径
+radial_max_cm = 0.005 # 外半径
+theta_min = 0.0 # theta 最小值
+theta_max = 3.141592653589793 # theta 最大值
+phi_min = 0.0 # phi 最小值
+phi_max = 6.283185307179586 # phi 最大值
+moving_mesh = false # 关闭 ALE
+macro_zoning = true # 启用 macro/PPM
+[initial_condition] # 初值
+profile_interpolation = linear # 线性插值
+profile_radius_unit = um # 半径单位
+outside_profile_policy = hard_fail # 覆盖不足失败
+[physics] # 物理开关
+enable_hydro = true # H
+enable_thermal = true # T
+enable_equilibration = true # E
+enable_radiation = true # R
+enable_alpha = true # A
+[radiation] # 辐射
+group_mode = explicit_frequency_groups # 显式频群
+group_edges_eV = 1,10,100 # 两组
+opacity_provider = tops_dt_tabulated # TOPS
+radiation_initialization = local_blackbody # 黑体初值
+radiation_initial_blackbody_scale = 1.0 # 缩放
+boundary_model = thesis_marshak_vacuum # Marshak
+flux_limiter = harmonic_eq_5_209 # harmonic
+[thermal] # 热传导
+kappa_model = lee_more_with_degeneracy # Lee-More
+electron_flux_limiter = minmax_old_time_face_effective_kappa # limiter
+[alpha] # alpha
+composition_model = equimolar_dt_from_p2_recovery # DT closure
+reactivity_model = bosch_hale_dt # Bosch-Hale
+alpha_initialization = zero # zero alpha
+[boundaries] # 边界
+inner_radial = scalar_origin_remap_required # 原点
+outer_radial = neumann_zero_flux # 外边界
+theta = scalar_pole_remap_required # 极点
+phi = periodic # 周期
+[output] # 输出
+write_profiles_every = 0 # 不写旧 profile
+write_diagnostics_every = 0 # 不写旧 diagnostics
+write_restart_every = 0 # 不写旧 restart
+write_dec3d_out_every_steps = 1 # 每步 dec3d.out
+field_checkpoint_every_steps = 0 # 不写常规 checkpoint
+field_checkpoint_interval_s = 0.0 # 不按时间写 checkpoint
+field_checkpoint_prefix = fields # 前缀
+field_checkpoint_format = csv3d # 格式
+restart_checkpoint_every_steps = 0 # 不写 restart
+restart_checkpoint_interval_s = 0.0 # 不按时间写 restart
+restart_checkpoint_prefix = restart # 前缀
+restart_checkpoint_format = dec3d_restart_text # 格式

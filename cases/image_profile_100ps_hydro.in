@@ -1,0 +1,73 @@
+# image_profile_100ps_hydro.in：由 image_profile_100ps_hydro.yaml 固化来的 P5-IO 控制文件
+[run] # 运行控制区
+case_name = image_profile_100ps_hydro # 算例名称
+phase = P5 # 阶段标识
+stage_order = H # 当前 image profile 仍是 hydro-only 入口
+step_count = 12000 # 目标最大步数，对应原 YAML 设置
+dt_mode = hydro_relaxed # 时间步由 hydro CFL 放宽
+cfl = 0.30 # CFL 系数
+output_dir = analysis/output/image_profile_100ps_hydro # 输出目录
+
+[mesh] # 网格控制区
+geometry = spherical # 球坐标几何
+radial_cells = 32 # 径向网格数
+theta_cells = 32 # 极角网格数
+phi_cells = 32 # 方位角网格数
+radial_min_cm = 0.0 # 内半径，单位 cm
+radial_max_cm = 0.005 # 外半径，单位 cm
+theta_min = 0.0 # theta 最小值
+theta_max = 3.141592653589793 # theta 最大值
+phi_min = 0.0 # phi 最小值
+phi_max = 6.283185307179586 # phi 最大值
+moving_mesh = true # 启用 ALE moving mesh
+macro_zoning = true # 启用 macro-zoning
+
+[initial_condition] # 初值控制区
+profile_interpolation = linear # 径向 profile 线性插值
+profile_radius_unit = um # profile 半径单位为微米
+outside_profile_policy = hard_fail # profile 不覆盖网格时直接失败
+
+[physics] # 物理模块开关区
+enable_hydro = true # 启用 H 阶段
+enable_thermal = false # 当前 image profile 关闭热传导
+enable_equilibration = false # 当前 image profile 关闭电子-离子平衡
+enable_radiation = false # 当前 image profile 关闭辐射输运
+enable_alpha = false # 当前 image profile 关闭 alpha 输运
+
+[radiation] # 辐射初始化占位区
+group_mode = explicit_frequency_groups # 使用显式频群布局
+group_edges_eV = 1,10,100 # 初始化所需的最小频群边界
+opacity_provider = tops_dt_tabulated # opacity provider 名称
+radiation_initialization = zero # hydro-only 算例辐射初值置零
+radiation_initial_blackbody_scale = 1.0 # 黑体缩放占位
+boundary_model = thesis_marshak_vacuum # 辐射边界配置占位
+flux_limiter = harmonic_eq_5_209 # 辐射 limiter 配置占位
+
+[thermal] # 热传导配置占位区
+kappa_model = lee_more_with_degeneracy # 热传导模型占位
+electron_flux_limiter = minmax_old_time_face_effective_kappa # 电子热流 limiter 占位
+
+[alpha] # alpha 配置占位区
+composition_model = equimolar_dt_from_p2_recovery # 等摩尔 DT 假设
+reactivity_model = bosch_hale_dt # Bosch-Hale 反应率配置
+alpha_initialization = zero # alpha 初值置零
+
+[boundaries] # 边界条件区
+inner_radial = scalar_origin_remap_required # 原点 scalar remap
+outer_radial = neumann_zero_flux # 外径向零通量
+theta = scalar_pole_remap_required # 极点 scalar remap
+phi = periodic # 方位角周期边界
+
+[output] # 输出控制区
+write_profiles_every = 1024 # 传统 profile 输出步数间隔
+write_diagnostics_every = 1024 # 传统 diagnostics 输出步数间隔
+write_restart_every = 12000 # 旧 restart 输出步数间隔
+write_dec3d_out_every_steps = 1 # 每一步写 dec3d.out
+field_checkpoint_every_steps = 1024 # 每 1024 步写常规三维物理量 checkpoint
+field_checkpoint_interval_s = 0.0 # 0 表示不用模拟时间触发常规 checkpoint
+field_checkpoint_prefix = fields # 常规 checkpoint 文件名前缀
+field_checkpoint_format = csv3d # 常规 checkpoint 文本格式
+restart_checkpoint_every_steps = 12000 # 最终步附近写可重启 checkpoint
+restart_checkpoint_interval_s = 0.0 # 0 表示不用模拟时间触发 restart checkpoint
+restart_checkpoint_prefix = restart # restart checkpoint 文件名前缀
+restart_checkpoint_format = dec3d_restart_text # restart checkpoint 文本格式

@@ -1,0 +1,41 @@
+# Build trees
+/build/
+/build-*/
+/Testing/
+
+# Runtime and benchmark outputs
+/analysis/output/
+/analysis/tmp/
+/analysis/perf_review/
+
+# Packaged snapshots and generated binaries
+/*.zip
+/*.exe
+
+# CMake/MSVC generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.sln
+*.user
+*.obj
+*.pdb
+*.ilk
+*.lib
+*.dll
+*.exp
+*.log
+
+# Python/cache/editor noise
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.vscode/
+.vs/
+
+# OS noise
+Thumbs.db
+Desktop.ini
