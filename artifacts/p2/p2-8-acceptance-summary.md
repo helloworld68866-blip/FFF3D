@@ -79,8 +79,8 @@ Focused coverage included:
 
 ## Runtime Evidence
 
-Manual smoke cases previously run through
-`dec3d_benchmark_p2_thermal_slab_mpi`:
+Manual smoke cases were historically run through the P2 thermal slab runner
+before benchmark execution moved to deck/profile-driven cases:
 
 - `exact_l0`
 - `flux_limiter_stress`

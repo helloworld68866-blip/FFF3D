@@ -21,7 +21,6 @@ For build and test verification in this repository, always prefer a clean rebuil
 
 ## Project
 This repo is a **from-scratch DEC3D implementation**.
-Do not patch, wrap, or delegate to any older codebase.
 
 ## Source of truth
 Follow docs in this order:
@@ -65,32 +64,11 @@ Work in **small vertical slices**:
 4. prove runtime uses the new path
 5. then mark done
 
-## Completion rule
-A task is complete only if:
-- it matches current docs
-- tests fail first and pass after
-- runtime executes the new path
-- required diagnostics are emitted
-- no forbidden shortcut was used
-
 ## Forbidden shortcuts
 - delegating execution to old code
 - placeholder kernels presented as final
-- fake HLLC / fake PPM
-- copying velocity into momentum buffers and calling it conservative
 - default-zero diagnostics for required metrics
 - silently relaxing thresholds
-
-## Phase policy
-Phases:
-- `P0` foundation
-- `P1` hydro
-- `P2` thermal + e-i
-- `P3` radiation
-- `P4` alpha
-- `P5` integrated DEC3D
-
-Do not move to the next phase until the current phase acceptance gates are green.
 
 ## Final principle
 This repo succeeds only by delivering a **real executable numerical core** with **real diagnostics** and **real acceptance evidence**.
