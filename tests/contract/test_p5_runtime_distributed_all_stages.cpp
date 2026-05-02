@@ -174,6 +174,54 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
     DEC3D_CHECK(result.report_line.find("gather_metadata_precomputed=true") !=
                 std::string::npos);
 
+    const auto axisym_root = root / "axisymmetric_2d";
+    const auto axisym_deck = axisym_root / "axisymmetric_2d_noale_allstages_smoke.in";
+    const auto axisym_profile = axisym_root / "axisymmetric_2d_noale_smoke.pro";
+    const auto axisym_output = axisym_root / "output";
+    if (rank == 0) {
+      std::filesystem::create_directories(axisym_root);
+      std::filesystem::copy_file("F:/dec3d/cases/axisymmetric_2d_noale_allstages_smoke.in",
+                                 axisym_deck,
+                                 std::filesystem::copy_options::overwrite_existing);
+      std::filesystem::copy_file("F:/dec3d/cases/axisymmetric_2d_noale_smoke.pro",
+                                 axisym_profile,
+                                 std::filesystem::copy_options::overwrite_existing);
+      auto axisym_deck_text = ReadText(axisym_deck);
+      const auto old_output =
+          std::string("F:/dec3d/analysis/output/axisymmetric_2d_noale_allstages_smoke");
+      axisym_deck_text.replace(axisym_deck_text.find(old_output),
+                               old_output.size(),
+                               axisym_output.generic_string());
+      WriteText(axisym_deck, axisym_deck_text);
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    const std::vector<std::string> axisym_args{
+        "dec3d.exe",
+        "-input",
+        axisym_deck.string(),
+        "-profile",
+        axisym_profile.string()};
+    const auto axisym_result = dec3d::app::RunDec3DCommandLine(axisym_args);
+    if (axisym_result.exit_code != 0) {
+      dec3d::test::Fail("axisymmetric distributed runtime success",
+                        __FILE__,
+                        __LINE__,
+                        axisym_result.failure_diagnostics);
+    }
+    DEC3D_CHECK(axisym_result.report_line.find("runtime_steps_executed=2") !=
+                std::string::npos);
+    DEC3D_CHECK(axisym_result.report_line.find("mesh_dimensionality=axisymmetric_2d") !=
+                std::string::npos);
+    DEC3D_CHECK(axisym_result.report_line.find("phi_sweep_executed=false") !=
+                std::string::npos);
+    DEC3D_CHECK(axisym_result.report_line.find("axisymmetric_invariant_ok=true") !=
+                std::string::npos);
+    DEC3D_CHECK(axisym_result.report_line.find("global_phi_coupling_count=0") !=
+                std::string::npos);
+    DEC3D_CHECK(axisym_result.report_line.find("global_duplicate_column_row_count=0") !=
+                std::string::npos);
+
     MPI_Barrier(MPI_COMM_WORLD);
     if (rank == 0) {
       std::filesystem::remove_all(root);

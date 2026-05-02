@@ -51,6 +51,8 @@ struct DistributedThermalConductionResult {
   double hypre_solve_wall_s{0.0};
   double writeback_wall_s{0.0};
   int solver_iterations{0};
+  std::string electron_matrix_report;
+  std::string ion_matrix_report;
   std::string electron_solve_report;
   std::string ion_solve_report;
   std::string coefficient_report;

@@ -121,6 +121,9 @@ struct RuntimeStageResult {
   std::size_t lagged_amg_rebuild_count{0u};
   std::size_t lagged_amg_fallback_rebuild_count{0u};
   double max_lagged_amg_global_matrix_rel_change{0.0};
+  std::size_t global_phi_coupling_count{0u};
+  std::size_t global_duplicate_column_row_count{0u};
+  bool global_matrix_diagnostics_present{false};
   std::string report_line;
   std::string failure_reason;
   std::string failure_diagnostics;
@@ -161,6 +164,40 @@ struct RuntimeNohExactInflowState {
 #ifdef DEC3D_ENABLE_HYPRE
 [[nodiscard]] bool HasToken(const std::string& text, const char* token) noexcept {
   return text.find(token) != std::string::npos;
+}
+
+[[nodiscard]] std::optional<std::size_t> MaxUnsignedDiagnosticValue(
+    std::string_view text,
+    std::string_view key) noexcept {
+  std::optional<std::size_t> value;
+  std::size_t pos = 0u;
+  while ((pos = text.find(key, pos)) != std::string_view::npos) {
+    pos += key.size();
+    std::size_t parsed = 0u;
+    bool has_digits = false;
+    while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') {
+      has_digits = true;
+      parsed = parsed * 10u + static_cast<std::size_t>(text[pos] - '0');
+      ++pos;
+    }
+    if (has_digits) {
+      value = value.has_value() ? std::max(*value, parsed) : parsed;
+    }
+  }
+  return value;
+}
+
+void AttachDistributedMatrixDiagnostics(
+    RuntimeStageResult& result,
+    const std::string& report_line) noexcept {
+  const auto phi = MaxUnsignedDiagnosticValue(report_line, "global_phi_coupling_count=");
+  const auto duplicates =
+      MaxUnsignedDiagnosticValue(report_line, "global_duplicate_column_row_count=");
+  if (phi.has_value() && duplicates.has_value()) {
+    result.global_phi_coupling_count = *phi;
+    result.global_duplicate_column_row_count = *duplicates;
+    result.global_matrix_diagnostics_present = true;
+  }
 }
 #endif
 
@@ -1385,6 +1422,13 @@ void GatherLocalStateToRoot(
          << "; updated_fields_mask=" << thermal.updated_fields
          << "; nested_thermal_report={" << thermal.report_line << "}";
   result.report_line = report.str();
+  AttachDistributedMatrixDiagnostics(result,
+                                     thermal.electron_matrix_report + ";" +
+                                         thermal.ion_matrix_report);
+  if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) &&
+      !result.global_matrix_diagnostics_present) {
+    return FailStage('T', "distributed implicit matrix diagnostics missing", result.report_line);
+  }
   return result;
 }
 
@@ -1467,6 +1511,16 @@ void GatherLocalStateToRoot(
          << "; updated_fields_mask=" << radiation.updated_fields
          << "; nested_radiation_report={" << radiation.report_line << "}";
   result.report_line = report.str();
+  std::string radiation_matrix_reports;
+  for (const auto& matrix_report : radiation.per_group_matrix_reports) {
+    radiation_matrix_reports += matrix_report;
+    radiation_matrix_reports += ';';
+  }
+  AttachDistributedMatrixDiagnostics(result, radiation_matrix_reports);
+  if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) &&
+      !result.global_matrix_diagnostics_present) {
+    return FailStage('R', "distributed implicit matrix diagnostics missing", result.report_line);
+  }
   return result;
 }
 
@@ -1522,6 +1576,11 @@ void GatherLocalStateToRoot(
          << "; updated_fields_mask=" << alpha.updated_fields
          << "; nested_alpha_report={" << alpha.report_line << "}";
   result.report_line = report.str();
+  AttachDistributedMatrixDiagnostics(result, alpha.assembly_report);
+  if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) &&
+      !result.global_matrix_diagnostics_present) {
+    return FailStage('A', "distributed implicit matrix diagnostics missing", result.report_line);
+  }
   return result;
 }
 #endif
@@ -1586,6 +1645,9 @@ struct RuntimeLoopResult {
   double a_hypre_solve_wall_s{0.0};
   double a_writeback_wall_s{0.0};
   int a_solver_iterations{0};
+  std::size_t global_phi_coupling_count{0u};
+  std::size_t global_duplicate_column_row_count{0u};
+  bool global_matrix_diagnostics_present{false};
   std::string report_line;
   std::string failure_reason;
   std::string failure_diagnostics;
@@ -1909,6 +1971,14 @@ void AddRuntimeStagePerformance(RuntimeLoopResult& loop,
       break;
     default:
       break;
+  }
+  if (result.global_matrix_diagnostics_present) {
+    loop.global_phi_coupling_count =
+        std::max(loop.global_phi_coupling_count, result.global_phi_coupling_count);
+    loop.global_duplicate_column_row_count =
+        std::max(loop.global_duplicate_column_row_count,
+                 result.global_duplicate_column_row_count);
+    loop.global_matrix_diagnostics_present = true;
   }
 }
 
@@ -2399,6 +2469,11 @@ struct RuntimeStartPoint {
          << (serial_opacity_table_loaded ? "true" : "false")
          << "; serial_implicit_cell_limit=" << kSerialImplicitRuntimeCellLimit;
   AppendAxisymmetricInvariantDiagnostics(report, config, axisym);
+  report << "; global_matrix_diagnostics_present="
+         << (loop.global_matrix_diagnostics_present ? "true" : "false")
+         << "; global_phi_coupling_count=" << loop.global_phi_coupling_count
+         << "; global_duplicate_column_row_count="
+         << loop.global_duplicate_column_row_count;
   AppendRuntimeTimingDiagnostics(report, loop);
   loop.success = true;
   loop.report_line = report.str();
@@ -2825,6 +2900,11 @@ struct RuntimeStartPoint {
          << "; gather_metadata_precomputed=true"
          << "; serial_implicit_cell_limit=" << kSerialImplicitRuntimeCellLimit;
   AppendAxisymmetricInvariantDiagnostics(report, config, axisym);
+  report << "; global_matrix_diagnostics_present="
+         << (loop.global_matrix_diagnostics_present ? "true" : "false")
+         << "; global_phi_coupling_count=" << loop.global_phi_coupling_count
+         << "; global_duplicate_column_row_count="
+         << loop.global_duplicate_column_row_count;
   AppendRuntimeTimingDiagnostics(report, loop);
   loop.success = true;
   loop.report_line = report.str();

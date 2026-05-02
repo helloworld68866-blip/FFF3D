@@ -749,6 +749,11 @@ DistributedThermalConductionResult ApplyDistributedVariableKappaThermalConductio
   const auto electron_assembly = AssembleDistributedGenericDiffusionSystem(electron_problem);
   const auto ion_assembly = AssembleDistributedGenericDiffusionSystem(ion_problem);
   result.assembly_wall_s = ElapsedSecondsSince(assembly_timer);
+  result.electron_matrix_report =
+      electron_assembly.success ? electron_assembly.report_line
+                                : electron_assembly.failure_diagnostics;
+  result.ion_matrix_report =
+      ion_assembly.success ? ion_assembly.report_line : ion_assembly.failure_diagnostics;
   local_stage_ok = electron_assembly.success && ion_assembly.success;
   const bool global_assembly_ok =
       AllreduceMinBool(ownership.communicator, local_stage_ok) != 0;
