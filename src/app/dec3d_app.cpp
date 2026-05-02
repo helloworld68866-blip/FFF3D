@@ -2116,6 +2116,7 @@ struct RuntimeStartPoint {
   std::size_t step = 0u;
   double time_s = 0.0;
   dec3d::state::CanonicalStateLayout layout;
+  std::string restart_dimensionality{"full_3d"};
   std::string line;
   while (std::getline(in, line)) {
     if (line.rfind("#", 0) != 0) {
@@ -2145,6 +2146,8 @@ struct RuntimeStartPoint {
         layout.theta_cells = static_cast<std::size_t>(std::stoull(value));
       } else if (key == "phi_cells") {
         layout.phi_cells = static_cast<std::size_t>(std::stoull(value));
+      } else if (key == "dimensionality") {
+        restart_dimensionality = value;
       } else if (key == "radiation_group_count") {
         layout.radiation_group_count = static_cast<std::size_t>(std::stoull(value));
       }
@@ -2164,6 +2167,9 @@ struct RuntimeStartPoint {
       layout.phi_cells != config.mesh.phi_cells ||
       layout.radiation_group_count != group_layout.group_count) {
     return FailRestartLoad("restart layout does not match input deck", restart_path);
+  }
+  if (restart_dimensionality != dec3d::io::ToString(config.mesh.dimensionality)) {
+    return FailRestartLoad("restart dimensionality does not match input deck", restart_path);
   }
   if (!(time_s >= 0.0) || !std::isfinite(time_s)) {
     return FailRestartLoad("restart time is not finite", restart_path);

@@ -1,3 +1,4 @@
+#include "app/dec3d_app.hpp"
 #include "initialization/profile_initializer.hpp"
 #include "io/input_deck.hpp"
 #include "io/radial_profile.hpp"
@@ -9,6 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -23,6 +25,15 @@ std::string ReadText(const std::filesystem::path& path) {
   std::stringstream buffer;
   buffer << in.rdbuf();
   return buffer.str();
+}
+
+std::string ReplaceAll(std::string text, const std::string& from, const std::string& to) {
+  std::size_t pos = 0;
+  while ((pos = text.find(from, pos)) != std::string::npos) {
+    text.replace(pos, from.size(), to);
+    pos += to.size();
+  }
+  return text;
 }
 
 }  // namespace
@@ -161,6 +172,78 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
   assert(restart.find("e_electron,-1,") != std::string::npos);
   assert(restart.find("radiation_groups,0,") != std::string::npos);
   assert(restart.find("alpha_state,-1,") != std::string::npos);
+  DEC3D_CHECK(restart.find("# dimensionality=full_3d") != std::string::npos);
+
+  auto axisym_config = deck.config;
+  axisym_config.run.case_name = "axisymmetric_checkpoint_contract";
+  axisym_config.run.output_dir = (root / "output_axisym").generic_string();
+  axisym_config.mesh.dimensionality = dec3d::io::MeshDimensionality::axisymmetric_2d;
+  axisym_config.mesh.phi_cells = 1u;
+  axisym_config.mesh.moving_mesh = false;
+  const auto axisym_init = dec3d::initialization::InitializeFromRadialProfile(
+      axisym_config, profile.profile, profile_path);
+  DEC3D_CHECK(axisym_init.success);
+  const auto axisym_write = dec3d::io::WriteInitialRuntimeOutputs(
+      axisym_config,
+      axisym_init.state,
+      axisym_init.geometry,
+      axisym_init.group_layout,
+      profile_path);
+  DEC3D_CHECK(axisym_write.success);
+  DEC3D_CHECK(axisym_write.restart_checkpoint_written);
+  const auto axisym_restart = ReadText(root / "output_axisym" / "restart_000000.snap");
+  DEC3D_CHECK(axisym_restart.find("# dimensionality=axisymmetric_2d") !=
+              std::string::npos);
+  DEC3D_CHECK(axisym_restart.find("# phi_cells=1") != std::string::npos);
+
+  const auto tampered_full_restart = root / "output" / "restart_dim_axisym.snap";
+  WriteText(tampered_full_restart,
+            ReplaceAll(restart, "# dimensionality=full_3d",
+                       "# dimensionality=axisymmetric_2d"));
+  const std::vector<std::string> full_deck_bad_dim_args{
+      "dec3d.exe",
+      "-input",
+      deck_path.string(),
+      "-profile",
+      profile_path.string(),
+      "-restart",
+      tampered_full_restart.string()};
+  const auto full_deck_bad_dim =
+      dec3d::app::RunDec3DCommandLine(full_deck_bad_dim_args);
+  DEC3D_CHECK(full_deck_bad_dim.exit_code != 0);
+  DEC3D_CHECK(full_deck_bad_dim.failure_diagnostics.find(
+                  "restart dimensionality does not match input deck") !=
+              std::string::npos);
+
+  const auto axisym_deck_path = root / "case_axisym_restart_mismatch.in";
+  auto axisym_deck_text = ReadText(deck_path);
+  axisym_deck_text = ReplaceAll(axisym_deck_text,
+                                "geometry = spherical\n",
+                                "geometry = spherical\ndimensionality = axisymmetric_2d\n");
+  axisym_deck_text = ReplaceAll(axisym_deck_text, "phi_cells = 4", "phi_cells = 1");
+  axisym_deck_text = ReplaceAll(axisym_deck_text, "moving_mesh = true", "moving_mesh = false");
+  axisym_deck_text = ReplaceAll(axisym_deck_text,
+                                (root / "output").generic_string(),
+                                (root / "output_axisym_mismatch").generic_string());
+  WriteText(axisym_deck_path, axisym_deck_text);
+  const auto tampered_axisym_restart = root / "output_axisym" / "restart_dim_full3d.snap";
+  WriteText(tampered_axisym_restart,
+            ReplaceAll(axisym_restart, "# dimensionality=axisymmetric_2d",
+                       "# dimensionality=full_3d"));
+  const std::vector<std::string> axisym_deck_bad_dim_args{
+      "dec3d.exe",
+      "-input",
+      axisym_deck_path.string(),
+      "-profile",
+      profile_path.string(),
+      "-restart",
+      tampered_axisym_restart.string()};
+  const auto axisym_deck_bad_dim =
+      dec3d::app::RunDec3DCommandLine(axisym_deck_bad_dim_args);
+  DEC3D_CHECK(axisym_deck_bad_dim.exit_code != 0);
+  DEC3D_CHECK(axisym_deck_bad_dim.failure_diagnostics.find(
+                  "restart dimensionality does not match input deck") !=
+              std::string::npos);
 
   const auto history = ReadText(root / "output" / "output_contract.his");
   DEC3D_CHECK(history.find("# diagnostic_id=p5.io.history_profile") != std::string::npos);

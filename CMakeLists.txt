@@ -530,6 +530,7 @@ if(DEC3D_BUILD_TESTS)
   )
   target_link_libraries(dec3d_contract_p5_io_checkpoint_files
     PRIVATE
+      dec3d_app
       dec3d_initialization
       dec3d_io
       dec3d_radiation

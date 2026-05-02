@@ -80,6 +80,7 @@ void WriteSnapshotMetadata(
     std::ofstream& out,
     const char* diagnostic_id,
     bool restart_compatible,
+    dec3d::io::MeshDimensionality dimensionality,
     const dec3d::state::CanonicalState& state,
     const dec3d::radiation::RadiationGroupLayout& group_layout,
     const std::filesystem::path& profile_path,
@@ -93,6 +94,7 @@ void WriteSnapshotMetadata(
       << "# radial_cells=" << state.layout.radial_cells << '\n'
       << "# theta_cells=" << state.layout.theta_cells << '\n'
       << "# phi_cells=" << state.layout.phi_cells << '\n'
+      << "# dimensionality=" << dec3d::io::ToString(dimensionality) << '\n'
       << "# radiation_group_count=" << group_layout.group_count << '\n'
       << "# source_profile=" << profile_path.string() << '\n'
       << "field,group,radial,theta,phi,value\n";
@@ -154,6 +156,7 @@ void ComputeExtremaFromRecovery(
 
 [[nodiscard]] bool WriteFieldCheckpointFile(
     const std::filesystem::path& path,
+    dec3d::io::MeshDimensionality dimensionality,
     const dec3d::state::CanonicalState& state,
     const dec3d::radiation::RadiationGroupLayout& group_layout,
     const std::filesystem::path& profile_path,
@@ -167,8 +170,8 @@ void ComputeExtremaFromRecovery(
     return false;
   }
   out << std::setprecision(17);
-  WriteSnapshotMetadata(out, "p5.io.field_checkpoint", false, state, group_layout, profile_path,
-                        step, time_s);
+  WriteSnapshotMetadata(out, "p5.io.field_checkpoint", false, dimensionality, state, group_layout,
+                        profile_path, step, time_s);
   for (std::size_t r = 0u; r < state.layout.radial_cells; ++r) {
     for (std::size_t t = 0u; t < state.layout.theta_cells; ++t) {
       for (std::size_t p = 0u; p < state.layout.phi_cells; ++p) {
@@ -188,6 +191,7 @@ void ComputeExtremaFromRecovery(
 
 [[nodiscard]] bool WriteFieldCheckpointFile(
     const std::filesystem::path& path,
+    dec3d::io::MeshDimensionality dimensionality,
     const dec3d::state::CanonicalState& state,
     const dec3d::radiation::RadiationGroupLayout& group_layout,
     const std::filesystem::path& profile_path,
@@ -199,7 +203,8 @@ void ComputeExtremaFromRecovery(
     return false;
   }
   return WriteFieldCheckpointFile(
-      path, state, group_layout, profile_path, step, time_s, recovery, failure_reason);
+      path, dimensionality, state, group_layout, profile_path, step, time_s, recovery,
+      failure_reason);
 }
 
 [[nodiscard]] bool WriteHistoryProfileFile(
@@ -287,6 +292,7 @@ void ComputeExtremaFromRecovery(
 
 [[nodiscard]] bool WriteRestartCheckpointFile(
     const std::filesystem::path& path,
+    dec3d::io::MeshDimensionality dimensionality,
     const dec3d::state::CanonicalState& state,
     const dec3d::radiation::RadiationGroupLayout& group_layout,
     const std::filesystem::path& profile_path,
@@ -299,8 +305,8 @@ void ComputeExtremaFromRecovery(
     return false;
   }
   out << std::setprecision(17);
-  WriteSnapshotMetadata(out, "p5.io.restart_checkpoint", true, state, group_layout, profile_path,
-                        step, time_s);
+  WriteSnapshotMetadata(out, "p5.io.restart_checkpoint", true, dimensionality, state, group_layout,
+                        profile_path, step, time_s);
   WriteFieldRows(out, "rho", -1, state.rho);
   WriteFieldRows(out, "mom_r", -1, state.mom_r);
   WriteFieldRows(out, "mom_theta", -1, state.mom_theta);
@@ -504,7 +510,8 @@ RuntimeOutputWriteResult WriteInitialRuntimeOutputs(
       const auto write_start = std::chrono::steady_clock::now();
       if (!WriteFieldCheckpointFile(
               output_dir / FormatStepSnapshotName(config.output.field_checkpoint_prefix, 0u),
-              state, group_layout, profile_path, 0u, 0.0, recovery, failure)) {
+              config.mesh.dimensionality, state, group_layout, profile_path, 0u, 0.0, recovery,
+              failure)) {
         return FailOutput(failure);
       }
       result.field_checkpoint_written = true;
@@ -515,7 +522,7 @@ RuntimeOutputWriteResult WriteInitialRuntimeOutputs(
       const auto write_start = std::chrono::steady_clock::now();
       if (!WriteRestartCheckpointFile(
               output_dir / FormatStepSnapshotName(config.output.restart_checkpoint_prefix, 0u),
-              state, group_layout, profile_path, 0u, 0.0, failure)) {
+              config.mesh.dimensionality, state, group_layout, profile_path, 0u, 0.0, failure)) {
         return FailOutput(failure);
       }
       result.restart_checkpoint_written = true;
@@ -603,7 +610,8 @@ RuntimeOutputWriteResult WriteRuntimeStepOutputs(
       const auto write_start = std::chrono::steady_clock::now();
       if (!WriteFieldCheckpointFile(
               output_dir / FormatStepSnapshotName(config.output.field_checkpoint_prefix, step),
-              state, group_layout, profile_path, step, time_s, recovery, failure)) {
+              config.mesh.dimensionality, state, group_layout, profile_path, step, time_s,
+              recovery, failure)) {
         return FailOutput(failure);
       }
       output_state.last_field_checkpoint_time_s = time_s;
@@ -616,7 +624,8 @@ RuntimeOutputWriteResult WriteRuntimeStepOutputs(
       const auto write_start = std::chrono::steady_clock::now();
       if (!WriteRestartCheckpointFile(
               output_dir / FormatStepSnapshotName(config.output.restart_checkpoint_prefix, step),
-              state, group_layout, profile_path, step, time_s, failure)) {
+              config.mesh.dimensionality, state, group_layout, profile_path, step, time_s,
+              failure)) {
         return FailOutput(failure);
       }
       output_state.last_restart_checkpoint_time_s = time_s;
