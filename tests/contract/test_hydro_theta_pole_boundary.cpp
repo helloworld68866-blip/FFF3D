@@ -16,6 +16,7 @@ int main() {
     DEC3D_CHECK_EQ(MapPhiAcrossPole(1, 4), 3u);
     DEC3D_CHECK_EQ(MapPhiAcrossPole(2, 4), 0u);
     DEC3D_CHECK_EQ(MapPhiAcrossPole(3, 4), 1u);
+    DEC3D_CHECK_EQ(MapPhiAcrossPole(0, 1), 0u);
 
     const HydroConservativeState interior{
         1.0,
@@ -32,6 +33,22 @@ int main() {
     DEC3D_CHECK_EQ(ghost.mom_phi, -interior.mom_phi);
     DEC3D_CHECK_EQ(ghost.e_fluid_total, interior.e_fluid_total);
     DEC3D_CHECK_EQ(ghost.chi_e, interior.chi_e);
+
+    const HydroConservativeState axisymmetric_interior{
+        1.0,
+        2.0,
+        3.0,
+        0.0,
+        5.0,
+        0.6};
+    const auto axisymmetric_ghost = BuildThetaPoleGhostState(axisymmetric_interior);
+    DEC3D_CHECK_EQ(axisymmetric_ghost.rho, axisymmetric_interior.rho);
+    DEC3D_CHECK_EQ(axisymmetric_ghost.mom_r, axisymmetric_interior.mom_r);
+    DEC3D_CHECK_EQ(axisymmetric_ghost.mom_theta, -axisymmetric_interior.mom_theta);
+    DEC3D_CHECK_EQ(axisymmetric_ghost.mom_phi, 0.0);
+    DEC3D_CHECK_EQ(axisymmetric_ghost.e_fluid_total,
+                   axisymmetric_interior.e_fluid_total);
+    DEC3D_CHECK_EQ(axisymmetric_ghost.chi_e, axisymmetric_interior.chi_e);
 
     const auto theta_lower =
         PrepareThetaPoleBoundaryStates(BoundaryFace::lower, interior, interior);

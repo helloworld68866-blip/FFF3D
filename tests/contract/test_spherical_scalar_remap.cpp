@@ -55,7 +55,27 @@ int main() {
       DEC3D_CHECK(!validation.phi_half_turn_available);
       DEC3D_CHECK(validation.report_line.find("scalar_remap_topology_valid=false") !=
                   std::string::npos);
-      DEC3D_CHECK(validation.failure_reason.find("even phi") != std::string::npos);
+      DEC3D_CHECK(validation.failure_reason.find("one or an even phi") !=
+                  std::string::npos);
+    }
+
+    {
+      const auto validation = ValidateScalarHalfTurnTopology(Layout(3, 4, 1));
+      DEC3D_CHECK(validation.success);
+      DEC3D_CHECK(validation.phi_half_turn_available);
+      DEC3D_CHECK_EQ(MapPhiHalfTurn(0, 1), std::size_t{0});
+
+      const auto origin = MapScalarOriginNeighbor(1, 2, 0, Layout(3, 4, 1));
+      DEC3D_CHECK(origin.success);
+      CheckIndex(origin.mapped_index, 0, 1, 0, "axisymmetric origin maps same phi");
+
+      const auto lower = MapScalarLowerPoleNeighbor(1, 1, 0, Layout(3, 4, 1));
+      DEC3D_CHECK(lower.success);
+      CheckIndex(lower.mapped_index, 1, 0, 0, "axisymmetric lower pole maps same phi");
+
+      const auto upper = MapScalarUpperPoleNeighbor(1, 1, 0, Layout(3, 4, 1));
+      DEC3D_CHECK(upper.success);
+      CheckIndex(upper.mapped_index, 1, 3, 0, "axisymmetric upper pole maps same phi");
     }
 
     {

@@ -63,8 +63,8 @@ ScalarRemapValidation ValidateScalarHalfTurnTopology(
   if (!layout.is_valid()) {
     return ValidationFailure("scalar remap topology requires positive cell counts");
   }
-  if ((layout.phi_cells % 2u) != 0u) {
-    return ValidationFailure("scalar remap requires an even phi cell count");
+  if (layout.phi_cells != 1u && (layout.phi_cells % 2u) != 0u) {
+    return ValidationFailure("scalar remap requires one or an even phi cell count");
   }
 
   ScalarRemapValidation validation;
@@ -80,7 +80,13 @@ ScalarRemapValidation ValidateScalarHalfTurnTopology(
 }
 
 std::size_t MapPhiHalfTurn(std::size_t phi, std::size_t phi_cells) noexcept {
-  if (phi_cells == 0u || (phi_cells % 2u) != 0u || phi >= phi_cells) {
+  if (phi_cells == 0u || phi >= phi_cells) {
+    return phi_cells;
+  }
+  if (phi_cells == 1u) {
+    return 0u;
+  }
+  if ((phi_cells % 2u) != 0u) {
     return phi_cells;
   }
   return (phi + (phi_cells / 2u)) % phi_cells;

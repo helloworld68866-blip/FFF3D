@@ -9,7 +9,13 @@ bool PreparedBoundaryStates::is_complete() const noexcept {
 }
 
 std::size_t MapPhiAcrossPole(std::size_t phi, std::size_t phi_cells) noexcept {
-  if (phi_cells == 0u || (phi_cells % 2u) != 0u || phi >= phi_cells) {
+  if (phi_cells == 0u || phi >= phi_cells) {
+    return phi_cells;
+  }
+  if (phi_cells == 1u) {
+    return 0u;
+  }
+  if ((phi_cells % 2u) != 0u) {
     return phi_cells;
   }
 

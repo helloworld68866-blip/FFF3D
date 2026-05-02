@@ -1,5 +1,6 @@
 #include "core/array/array3d.hpp"
 #include "hydro/driver/hydro_boundary_ghosts.hpp"
+#include "hydro/driver/radial_boundary_contract.hpp"
 #include "test_assert.hpp"
 
 #include <iostream>
@@ -48,9 +49,12 @@ void CheckStateEquals(
 int main() {
   try {
     using dec3d::core::Array3D;
+    using dec3d::hydro::BuildOriginRadialGhostState;
     using dec3d::hydro::FillHydroRadialGhosts;
     using dec3d::hydro::HydroDirection;
     using dec3d::hydro::HydroConservativeState;
+    using dec3d::hydro::MapPhiAcrossOrigin;
+    using dec3d::hydro::MapThetaAcrossOrigin;
 
     constexpr std::size_t kGhostLayers = 3u;
     constexpr std::size_t kRadialCells = 4u;
@@ -80,6 +84,47 @@ int main() {
               BuildExpectedOriginGhost(interior(interior_radial, mapped_theta, mapped_phi));
           CheckStateEquals(prepared.ghosted_states(ghost, theta, phi), expected);
         }
+      }
+    }
+
+    DEC3D_CHECK_EQ(MapPhiAcrossOrigin(0u, 1u), std::size_t{0});
+    DEC3D_CHECK_EQ(MapThetaAcrossOrigin(2u, kThetaCells), std::size_t{1});
+    {
+      const HydroConservativeState mapped{
+          2.0,
+          3.0,
+          4.0,
+          0.0,
+          5.0,
+          1.0};
+      const auto ghost = BuildOriginRadialGhostState(mapped);
+      DEC3D_CHECK_EQ(ghost.rho, mapped.rho);
+      DEC3D_CHECK_EQ(ghost.mom_r, -mapped.mom_r);
+      DEC3D_CHECK_EQ(ghost.mom_theta, mapped.mom_theta);
+      DEC3D_CHECK_EQ(ghost.mom_phi, 0.0);
+      DEC3D_CHECK_EQ(ghost.e_fluid_total, mapped.e_fluid_total);
+      DEC3D_CHECK_EQ(ghost.chi_e, mapped.chi_e);
+    }
+
+    Array3D<HydroConservativeState> axisym_interior(
+        kRadialCells,
+        kThetaCells,
+        1u);
+    for (std::size_t radial = 0; radial < kRadialCells; ++radial) {
+      for (std::size_t theta = 0; theta < kThetaCells; ++theta) {
+        axisym_interior(radial, theta, 0u) = MakeState(radial, theta, 0u);
+        axisym_interior(radial, theta, 0u).mom_phi = 0.0;
+      }
+    }
+    const auto axisym_prepared = FillHydroRadialGhosts(axisym_interior, kGhostLayers);
+    DEC3D_CHECK(axisym_prepared.is_complete(kRadialCells, kThetaCells, 1u, kGhostLayers));
+    for (std::size_t theta = 0; theta < kThetaCells; ++theta) {
+      const std::size_t mapped_theta = kThetaCells - 1u - theta;
+      for (std::size_t ghost = 0; ghost < kGhostLayers; ++ghost) {
+        const std::size_t interior_radial = kGhostLayers - 1u - ghost;
+        const auto expected =
+            BuildExpectedOriginGhost(axisym_interior(interior_radial, mapped_theta, 0u));
+        CheckStateEquals(axisym_prepared.ghosted_states(ghost, theta, 0u), expected);
       }
     }
 

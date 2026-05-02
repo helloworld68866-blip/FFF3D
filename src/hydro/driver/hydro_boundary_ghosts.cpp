@@ -181,11 +181,13 @@ DirectionalGhostPreparation FillHydroRadialGhosts(
   const std::size_t outer_radial = interior_states.extent_r() - 1u;
   const bool use_origin_remap =
       lower_boundary_mode == RadialLowerBoundaryMode::origin_remap;
-  if (use_origin_remap && (interior_states.extent_phi() % 2u) != 0u) {
+  if (use_origin_remap &&
+      interior_states.extent_phi() != 1u &&
+      (interior_states.extent_phi() % 2u) != 0u) {
     return FailedPreparation(
         HydroDirection::radial,
         ghost_layers,
-        "radial origin ghost remap requires an even phi cell count");
+        "radial origin ghost remap requires one or an even phi cell count");
   }
   if (use_origin_remap && interior_states.extent_r() < ghost_layers) {
     return FailedPreparation(
@@ -340,11 +342,12 @@ DirectionalGhostPreparation FillHydroThetaPoleGhosts(
         ghost_layers,
         "theta ghost fill requires at least ng interior theta cells");
   }
-  if ((interior_states.extent_phi() % 2u) != 0u) {
+  if (interior_states.extent_phi() != 1u &&
+      (interior_states.extent_phi() % 2u) != 0u) {
     return FailedPreparation(
         HydroDirection::theta,
         ghost_layers,
-        "theta pole ghost fill requires an even phi cell count");
+        "theta pole ghost fill requires one or an even phi cell count");
   }
 
   preparation.ghosted_states = dec3d::core::Array3D<HydroConservativeState>(
