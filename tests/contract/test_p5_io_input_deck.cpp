@@ -103,6 +103,25 @@ history_profile_file = p5_io_smoke.his # angular-average history profile file
 )ini";
 }
 
+std::string ReplaceAll(std::string text, const std::string& from, const std::string& to) {
+  std::size_t pos = 0;
+  while ((pos = text.find(from, pos)) != std::string::npos) {
+    text.replace(pos, from.size(), to);
+    pos += to.size();
+  }
+  return text;
+}
+
+std::string AxisymmetricDeckText() {
+  auto deck = ValidDeckText();
+  deck = ReplaceAll(deck,
+                    "geometry = spherical # geometry",
+                    "geometry = spherical # geometry\ndimensionality = axisymmetric_2d # dimensionality");
+  deck = ReplaceAll(deck, "phi_cells = 4 # phi cell count", "phi_cells = 1 # phi cell count");
+  deck = ReplaceAll(deck, "moving_mesh = true # moving mesh", "moving_mesh = false # moving mesh");
+  return deck;
+}
+
 }  // namespace
 
 int main() {
@@ -130,6 +149,7 @@ int main() {
     DEC3D_CHECK(deck.config.run.case_name == "p5_io_smoke");
     DEC3D_CHECK(deck.config.run.target_time_s == 1.0e-10);
     DEC3D_CHECK(deck.config.run.stage_order.size() == 5u);
+    DEC3D_CHECK(deck.config.mesh.dimensionality == dec3d::io::MeshDimensionality::full_3d);
     DEC3D_CHECK(deck.config.mesh.radial_cells == 4u);
     DEC3D_CHECK(deck.config.radiation.group_edges_eV.size() == 3u);
     DEC3D_CHECK(deck.config.initial_condition.profile_interpolation == "linear");
@@ -153,6 +173,91 @@ int main() {
     DEC3D_CHECK(deck.report_line.find("history_profile_file=p5_io_smoke.his") != std::string::npos);
     DEC3D_CHECK(deck.report_line.find("target_time_trigger_enabled=true") != std::string::npos);
     DEC3D_CHECK(deck.report_line.find("target_time_s=1e-10") != std::string::npos);
+    DEC3D_CHECK(deck.report_line.find("mesh_dimensionality=full_3d") != std::string::npos);
+    DEC3D_CHECK(deck.report_line.find("phi_sweep_configured=true") != std::string::npos);
+  }
+
+  {
+    const auto axisym_path = root / "axisymmetric_2d_ok.in";
+    WriteText(axisym_path, AxisymmetricDeckText());
+    const auto deck = dec3d::io::LoadInputDeck(axisym_path);
+    DEC3D_CHECK(deck.success);
+    DEC3D_CHECK(deck.config.mesh.dimensionality ==
+                dec3d::io::MeshDimensionality::axisymmetric_2d);
+    DEC3D_CHECK(deck.config.mesh.phi_cells == 1u);
+    DEC3D_CHECK(!deck.config.mesh.moving_mesh);
+    DEC3D_CHECK(deck.report_line.find("mesh_dimensionality=axisymmetric_2d") !=
+                std::string::npos);
+    DEC3D_CHECK(deck.report_line.find("azimuthal_weight=2pi") != std::string::npos);
+    DEC3D_CHECK(deck.report_line.find("phi_sweep_configured=false") !=
+                std::string::npos);
+  }
+
+  {
+    const auto bad_phi_path = root / "axisymmetric_2d_bad_phi.in";
+    WriteText(bad_phi_path,
+              ReplaceAll(AxisymmetricDeckText(), "phi_cells = 1 # phi cell count",
+                         "phi_cells = 2 # phi cell count"));
+    const auto deck = dec3d::io::LoadInputDeck(bad_phi_path);
+    DEC3D_CHECK(!deck.success);
+    DEC3D_CHECK(deck.failure_reason.find("axisymmetric_2d requires phi_cells = 1") !=
+                std::string::npos);
+  }
+
+  {
+    const auto bad_ale_path = root / "axisymmetric_2d_bad_ale.in";
+    WriteText(bad_ale_path,
+              ReplaceAll(AxisymmetricDeckText(), "moving_mesh = false # moving mesh",
+                         "moving_mesh = true # moving mesh"));
+    const auto deck = dec3d::io::LoadInputDeck(bad_ale_path);
+    DEC3D_CHECK(!deck.success);
+    DEC3D_CHECK(deck.failure_reason.find("axisymmetric_2d requires moving_mesh=false") !=
+                std::string::npos);
+  }
+
+  {
+    const auto bad_m_path = root / "axisymmetric_2d_bad_m.in";
+    auto deck_text = AxisymmetricDeckText();
+    deck_text += R"ini(
+
+[perturbation]
+enabled = true
+type = single_mode_radial_velocity
+ell = 2
+m = 1
+amplitude = 0.1
+r0_cm = 1.0e-3
+target = radial_velocity_cm_s
+)ini";
+    WriteText(bad_m_path, deck_text);
+    const auto deck = dec3d::io::LoadInputDeck(bad_m_path);
+    DEC3D_CHECK(!deck.success);
+    DEC3D_CHECK(deck.failure_reason.find(
+                    "axisymmetric_2d only supports m = 0 perturbations") !=
+                std::string::npos);
+  }
+
+  {
+    const auto bad_phi_range_path = root / "axisymmetric_2d_bad_phi_range.in";
+    WriteText(bad_phi_range_path,
+              ReplaceAll(AxisymmetricDeckText(), "phi_max = 6.283185307179586 # phi max",
+                         "phi_max = 3.141592653589793 # phi max"));
+    const auto deck = dec3d::io::LoadInputDeck(bad_phi_range_path);
+    DEC3D_CHECK(!deck.success);
+    DEC3D_CHECK(deck.failure_reason.find(
+                    "axisymmetric_2d requires full theta and phi ranges") !=
+                std::string::npos);
+  }
+
+  {
+    const auto full3d_bad_path = root / "full3d_bad_phi1.in";
+    WriteText(full3d_bad_path,
+              ReplaceAll(ValidDeckText(), "phi_cells = 4 # phi cell count",
+                         "phi_cells = 1 # phi cell count"));
+    const auto deck = dec3d::io::LoadInputDeck(full3d_bad_path);
+    DEC3D_CHECK(!deck.success);
+    DEC3D_CHECK(deck.failure_reason.find("full_3d requires positive even phi_cells") !=
+                std::string::npos);
   }
 
   {

@@ -202,6 +202,23 @@ InputDeckLoadResult FailDeck(std::string reason) {
   return true;
 }
 
+[[nodiscard]] bool ParseMeshDimensionality(
+    const std::map<std::string, std::string>& values,
+    MeshDimensionality& out,
+    std::string& failure) {
+  const auto it = values.find("dimensionality");
+  if (it == values.end() || it->second == "full_3d") {
+    out = MeshDimensionality::full_3d;
+    return true;
+  }
+  if (it->second == "axisymmetric_2d") {
+    out = MeshDimensionality::axisymmetric_2d;
+    return true;
+  }
+  failure = "invalid mesh.dimensionality";
+  return false;
+}
+
 [[nodiscard]] std::string BuildDeckReport(const InputDeckConfig& config,
                                           const std::filesystem::path& path) {
   std::ostringstream out;
@@ -219,6 +236,13 @@ InputDeckLoadResult FailDeck(std::string reason) {
       << "; profile_interpolation=" << config.initial_condition.profile_interpolation
       << "; profile_radius_unit=" << config.initial_condition.profile_radius_unit
       << "; outside_profile_policy=" << config.initial_condition.outside_profile_policy
+      << "; mesh_dimensionality=" << ToString(config.mesh.dimensionality)
+      << "; active_hydro_directions="
+      << (IsAxisymmetric2D(config.mesh.dimensionality) ? "r,theta" : "r,theta,phi")
+      << "; azimuthal_weight="
+      << (IsAxisymmetric2D(config.mesh.dimensionality) ? "2pi" : "mesh_phi_faces")
+      << "; phi_sweep_configured="
+      << (IsAxisymmetric2D(config.mesh.dimensionality) ? "false" : "true")
       << "; inner_radial=" << config.boundaries.inner_radial
       << "; outer_radial=" << config.boundaries.outer_radial
       << "; noh_exact_inflow_deck_enabled="
@@ -267,6 +291,20 @@ InputDeckLoadResult FailDeck(std::string reason) {
 }
 
 }  // namespace
+
+const char* ToString(MeshDimensionality dimensionality) noexcept {
+  switch (dimensionality) {
+    case MeshDimensionality::full_3d:
+      return "full_3d";
+    case MeshDimensionality::axisymmetric_2d:
+      return "axisymmetric_2d";
+  }
+  return "full_3d";
+}
+
+bool IsAxisymmetric2D(MeshDimensionality dimensionality) noexcept {
+  return dimensionality == MeshDimensionality::axisymmetric_2d;
+}
 
 RuntimeArgumentResult ParseP5IORuntimeArguments(const std::vector<std::string>& argv) noexcept {
   std::filesystem::path input;
@@ -408,9 +446,29 @@ InputDeckLoadResult LoadInputDeck(const std::filesystem::path& input_deck_path) 
       !RequireBool(*mesh, "macro_zoning", cfg.mesh.macro_zoning, failure)) {
     return FailDeck(failure);
   }
-  if (cfg.mesh.geometry != "spherical" || !(cfg.mesh.radial_max_cm > cfg.mesh.radial_min_cm) ||
-      cfg.mesh.phi_cells % 2u != 0u) {
+  if (!ParseMeshDimensionality(*mesh, cfg.mesh.dimensionality, failure)) {
+    return FailDeck(failure);
+  }
+  if (cfg.mesh.geometry != "spherical" || !(cfg.mesh.radial_max_cm > cfg.mesh.radial_min_cm)) {
     return FailDeck("invalid mesh");
+  }
+  if (IsAxisymmetric2D(cfg.mesh.dimensionality)) {
+    if (cfg.mesh.phi_cells != 1u) {
+      return FailDeck("axisymmetric_2d requires phi_cells = 1");
+    }
+    if (cfg.mesh.moving_mesh) {
+      return FailDeck("axisymmetric_2d requires moving_mesh=false");
+    }
+    constexpr double kPi = 3.141592653589793238462643383279502884;
+    constexpr double kRangeTol = 1.0e-12;
+    if (std::abs(cfg.mesh.theta_min - 0.0) > kRangeTol ||
+        std::abs(cfg.mesh.theta_max - kPi) > kRangeTol ||
+        std::abs(cfg.mesh.phi_min - 0.0) > kRangeTol ||
+        std::abs(cfg.mesh.phi_max - 2.0 * kPi) > kRangeTol) {
+      return FailDeck("axisymmetric_2d requires full theta and phi ranges");
+    }
+  } else if (cfg.mesh.phi_cells == 0u || (cfg.mesh.phi_cells % 2u) != 0u) {
+    return FailDeck("full_3d requires positive even phi_cells");
   }
 
   if (!RequireString(*init, "profile_interpolation", cfg.initial_condition.profile_interpolation,
@@ -438,6 +496,9 @@ InputDeckLoadResult LoadInputDeck(const std::filesystem::path& input_deck_path) 
           !RequireDouble(*perturbation, "r0_cm", cfg.perturbation.r0_cm, failure) ||
           !RequireString(*perturbation, "target", cfg.perturbation.target, failure)) {
         return FailDeck(failure);
+      }
+      if (IsAxisymmetric2D(cfg.mesh.dimensionality) && cfg.perturbation.m != 0) {
+        return FailDeck("axisymmetric_2d only supports m = 0 perturbations");
       }
       if (cfg.perturbation.type != "single_mode_radial_velocity" ||
           cfg.perturbation.ell <= 0 || cfg.perturbation.m != 0 ||

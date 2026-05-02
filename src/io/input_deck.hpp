@@ -28,8 +28,17 @@ struct RunConfig {
   std::string output_dir;
 };
 
+enum class MeshDimensionality {
+  full_3d,
+  axisymmetric_2d,
+};
+
+[[nodiscard]] const char* ToString(MeshDimensionality dimensionality) noexcept;
+[[nodiscard]] bool IsAxisymmetric2D(MeshDimensionality dimensionality) noexcept;
+
 struct MeshConfig {
   std::string geometry;
+  MeshDimensionality dimensionality{MeshDimensionality::full_3d};
   std::size_t radial_cells{0};
   std::size_t theta_cells{0};
   std::size_t phi_cells{0};
