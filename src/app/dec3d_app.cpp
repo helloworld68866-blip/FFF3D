@@ -1591,6 +1591,88 @@ struct RuntimeLoopResult {
   std::string failure_diagnostics;
 };
 
+struct AxisymmetricInvariantSummary {
+  double max_abs_mom_phi{0.0};
+  double max_abs_v_phi{0.0};
+  double max_abs_mom_total{0.0};
+  double max_abs_velocity{0.0};
+  double mom_phi_tol{1.0e-30};
+  double v_phi_tol{1.0e-30};
+  bool ok{true};
+};
+
+void FinalizeAxisymmetricInvariantSummary(AxisymmetricInvariantSummary& summary) noexcept {
+  summary.mom_phi_tol = std::max(1.0e-30, 1.0e-14 * summary.max_abs_mom_total);
+  summary.v_phi_tol = std::max(1.0e-30, 1.0e-14 * summary.max_abs_velocity);
+  summary.ok = summary.max_abs_mom_phi <= summary.mom_phi_tol &&
+               summary.max_abs_v_phi <= summary.v_phi_tol;
+}
+
+[[nodiscard]] AxisymmetricInvariantSummary EvaluateAxisymmetricInvariants(
+    const dec3d::state::CanonicalState& state) noexcept {
+  AxisymmetricInvariantSummary summary;
+  for (std::size_t r = 0; r < state.layout.radial_cells; ++r) {
+    for (std::size_t t = 0; t < state.layout.theta_cells; ++t) {
+      for (std::size_t p = 0; p < state.layout.phi_cells; ++p) {
+        const double rho = state.rho(r, t, p);
+        const double mom_r = state.mom_r(r, t, p);
+        const double mom_theta = state.mom_theta(r, t, p);
+        const double mom_phi = state.mom_phi(r, t, p);
+        const double mom_total =
+            std::sqrt(mom_r * mom_r + mom_theta * mom_theta + mom_phi * mom_phi);
+        summary.max_abs_mom_phi = std::max(summary.max_abs_mom_phi, std::abs(mom_phi));
+        summary.max_abs_mom_total = std::max(summary.max_abs_mom_total, mom_total);
+        if (rho > 0.0 && std::isfinite(rho)) {
+          const double v_r = mom_r / rho;
+          const double v_theta = mom_theta / rho;
+          const double v_phi = mom_phi / rho;
+          const double velocity =
+              std::sqrt(v_r * v_r + v_theta * v_theta + v_phi * v_phi);
+          summary.max_abs_v_phi = std::max(summary.max_abs_v_phi, std::abs(v_phi));
+          summary.max_abs_velocity = std::max(summary.max_abs_velocity, velocity);
+        }
+      }
+    }
+  }
+  FinalizeAxisymmetricInvariantSummary(summary);
+  return summary;
+}
+
+#ifdef DEC3D_ENABLE_HYPRE
+[[nodiscard]] AxisymmetricInvariantSummary ReduceAxisymmetricInvariants(
+    MPI_Comm comm,
+    const AxisymmetricInvariantSummary& local) noexcept {
+  double local_values[4] = {
+      local.max_abs_mom_phi,
+      local.max_abs_v_phi,
+      local.max_abs_mom_total,
+      local.max_abs_velocity,
+  };
+  double global_values[4] = {};
+  MPI_Allreduce(local_values, global_values, 4, MPI_DOUBLE, MPI_MAX, comm);
+  AxisymmetricInvariantSummary summary;
+  summary.max_abs_mom_phi = global_values[0];
+  summary.max_abs_v_phi = global_values[1];
+  summary.max_abs_mom_total = global_values[2];
+  summary.max_abs_velocity = global_values[3];
+  FinalizeAxisymmetricInvariantSummary(summary);
+  return summary;
+}
+#endif
+
+void AppendAxisymmetricInvariantDiagnostics(
+    std::ostringstream& report,
+    const dec3d::io::InputDeckConfig& config,
+    const AxisymmetricInvariantSummary& axisym) {
+  report << "; max_abs_mom_phi=" << axisym.max_abs_mom_phi
+         << "; max_abs_v_phi=" << axisym.max_abs_v_phi
+         << "; axisymmetric_mom_phi_tol=" << axisym.mom_phi_tol
+         << "; axisymmetric_v_phi_tol=" << axisym.v_phi_tol
+         << "; axisymmetric_invariant_ok="
+         << (!dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) || axisym.ok ? "true"
+                                                                                   : "false");
+}
+
 [[nodiscard]] double ElapsedSecondsSince(
     const std::chrono::steady_clock::time_point& start) {
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -2275,6 +2357,17 @@ struct RuntimeStartPoint {
     }
   }
 
+  const auto axisym = EvaluateAxisymmetricInvariants(state);
+  if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) && !axisym.ok) {
+    loop.failure_reason = "axisymmetric invariant violated";
+    std::ostringstream failure;
+    failure << "diagnostic_id=p5.runtime.loop.failure"
+            << "; failure_reason=" << loop.failure_reason;
+    AppendAxisymmetricInvariantDiagnostics(failure, config, axisym);
+    loop.failure_diagnostics = failure.str();
+    return loop;
+  }
+
   std::ostringstream report;
   report << std::setprecision(17)
          << "diagnostic_id=p5.runtime.loop"
@@ -2305,6 +2398,7 @@ struct RuntimeStartPoint {
          << "; serial_radiation_table_loaded_once="
          << (serial_opacity_table_loaded ? "true" : "false")
          << "; serial_implicit_cell_limit=" << kSerialImplicitRuntimeCellLimit;
+  AppendAxisymmetricInvariantDiagnostics(report, config, axisym);
   AppendRuntimeTimingDiagnostics(report, loop);
   loop.success = true;
   loop.report_line = report.str();
@@ -2672,6 +2766,18 @@ struct RuntimeStartPoint {
     loop.runtime_output_wall_s += ElapsedSecondsSince(output_timer);
   }
 
+  const auto axisym =
+      ReduceAxisymmetricInvariants(MPI_COMM_WORLD, EvaluateAxisymmetricInvariants(local_state));
+  if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) && !axisym.ok) {
+    loop.failure_reason = "axisymmetric invariant violated";
+    std::ostringstream failure;
+    failure << "diagnostic_id=p5.runtime.loop.failure"
+            << "; failure_reason=" << loop.failure_reason;
+    AppendAxisymmetricInvariantDiagnostics(failure, config, axisym);
+    loop.failure_diagnostics = failure.str();
+    return loop;
+  }
+
   std::ostringstream report;
   report << std::setprecision(17)
          << "diagnostic_id=p5.runtime.loop"
@@ -2718,6 +2824,7 @@ struct RuntimeStartPoint {
          << (runtime_scalar_output_uses_mpi_reduce ? "true" : "false")
          << "; gather_metadata_precomputed=true"
          << "; serial_implicit_cell_limit=" << kSerialImplicitRuntimeCellLimit;
+  AppendAxisymmetricInvariantDiagnostics(report, config, axisym);
   AppendRuntimeTimingDiagnostics(report, loop);
   loop.success = true;
   loop.report_line = report.str();
