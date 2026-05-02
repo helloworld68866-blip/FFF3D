@@ -8,10 +8,11 @@
 #include "state/canonical_state/canonical_state.hpp"
 
 #include <cstddef>
+#include <functional>
 #include <limits>
-#include <map>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 namespace dec3d::radiation {
@@ -50,6 +51,19 @@ struct TopsOpacityMetadata {
   std::size_t density_clipping_warning_count{0u};
 };
 
+struct TopsOpacityRowKeyHash {
+  [[nodiscard]] std::size_t operator()(
+      const std::tuple<long long, long long, long long>& key) const noexcept {
+    const auto& [temperature, density, photon_energy] = key;
+    std::size_t seed = std::hash<long long>{}(temperature);
+    seed ^= std::hash<long long>{}(density) + 0x9e3779b97f4a7c15ull +
+            (seed << 6u) + (seed >> 2u);
+    seed ^= std::hash<long long>{}(photon_energy) + 0x9e3779b97f4a7c15ull +
+            (seed << 6u) + (seed >> 2u);
+    return seed;
+  }
+};
+
 struct TopsOpacityTable {
   struct MultigroupRow {
     double temperature_keV{0.0};
@@ -66,9 +80,11 @@ struct TopsOpacityTable {
   std::vector<double> density_requested_grid_g_cm3;
   std::vector<double> photon_energy_grid_keV;
   std::vector<MultigroupRow> multigroup_rows;
-  std::map<std::tuple<long long, long long, long long>, std::size_t>
-      multigroup_row_index;
-  std::map<long long, std::vector<double>> used_density_grid_by_temperature;
+  std::unordered_map<
+      std::tuple<long long, long long, long long>,
+      std::size_t,
+      TopsOpacityRowKeyHash> multigroup_row_index;
+  std::unordered_map<long long, std::vector<double>> used_density_grid_by_temperature;
 };
 
 struct TopsOpacityTableLoadResult {

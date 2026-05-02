@@ -31,6 +31,7 @@ constexpr double kBoundaryTolerance = 1.0e-14;
 constexpr int kBoomerAmgPreconditionerMaxIterations = 1;
 constexpr double kBoomerAmgPreconditionerTolerance = 0.0;
 constexpr int kBoomerAmgPreconditionerPrintLevel = 0;
+constexpr double kBoomerAmgStrongThreshold = 0.5;
 constexpr std::size_t kExpectedDistributedStencilEntriesPerRow = 8u;
 
 using RowAccumulator = std::vector<std::vector<std::pair<std::size_t, double>>>;
@@ -73,6 +74,57 @@ using RowAccumulator = std::vector<std::vector<std::pair<std::size_t, double>>>;
     return 0;
   }
   return HYPRE_Initialize();
+}
+
+[[nodiscard]] HYPRE_Int NoOpParSolverSetup(
+    HYPRE_Solver,
+    HYPRE_ParCSRMatrix,
+    HYPRE_ParVector,
+    HYPRE_ParVector) {
+  return 0;
+}
+
+struct HyprePreconditionerSetupStatus {
+  HYPRE_Int status{0};
+  const char* reason{"none"};
+  const char* phase{"none"};
+};
+
+[[nodiscard]] HyprePreconditionerSetupStatus ConfigureBoomerAmg(
+    HYPRE_Solver boomeramg) {
+  auto status = HYPRE_BoomerAMGSetPrintLevel(
+      boomeramg,
+      kBoomerAmgPreconditionerPrintLevel);
+  if (status != 0) {
+    return {status,
+            "HYPRE distributed BoomerAMG print-level setup failed",
+            "BoomerAMGSetPrintLevel"};
+  }
+  status = HYPRE_BoomerAMGSetMaxIter(
+      boomeramg,
+      kBoomerAmgPreconditionerMaxIterations);
+  if (status != 0) {
+    return {status,
+            "HYPRE distributed BoomerAMG max-iteration setup failed",
+            "BoomerAMGSetMaxIter"};
+  }
+  status = HYPRE_BoomerAMGSetTol(
+      boomeramg,
+      kBoomerAmgPreconditionerTolerance);
+  if (status != 0) {
+    return {status,
+            "HYPRE distributed BoomerAMG tolerance setup failed",
+            "BoomerAMGSetTol"};
+  }
+  status = HYPRE_BoomerAMGSetStrongThreshold(
+      boomeramg,
+      kBoomerAmgStrongThreshold);
+  if (status != 0) {
+    return {status,
+            "HYPRE distributed BoomerAMG strong-threshold setup failed",
+            "BoomerAMGSetStrongThreshold"};
+  }
+  return {};
 }
 
 struct HypreDistributedObjects {
@@ -1061,6 +1113,46 @@ void ComputeDistributedResiduals(
       result.global_residual_linf / std::max(1.0, result.global_rhs_linf);
 }
 
+[[nodiscard]] double LocalMatrixRelativeChange(
+    const DistributedGenericDiffusionAssemblyResult& assembly,
+    const DistributedLaggedBoomerAmgCacheEntry& cache) noexcept {
+  if (!cache.valid ||
+      cache.row_offsets != assembly.local_matrix.row_offsets ||
+      cache.column_indices != assembly.local_matrix.column_indices ||
+      cache.values.size() != assembly.local_matrix.values.size()) {
+    return std::numeric_limits<double>::infinity();
+  }
+  double max_relative_change = 0.0;
+  for (std::size_t i = 0; i < assembly.local_matrix.values.size(); ++i) {
+    const double old_abs = std::abs(cache.values[i]);
+    const double new_abs = std::abs(assembly.local_matrix.values[i]);
+    const double scale = std::max({old_abs, new_abs, 1.0e-300});
+    const double relative_change = std::abs(assembly.local_matrix.values[i] - cache.values[i]) /
+                                   scale;
+    max_relative_change = std::max(max_relative_change, relative_change);
+  }
+  return max_relative_change;
+}
+
+void StoreLaggedAmgSetupSnapshot(
+    DistributedLaggedBoomerAmgCacheEntry& cache,
+    const DistributedGenericDiffusionAssemblyResult& assembly,
+    int iterations) {
+  cache.valid = true;
+  cache.last_iterations = iterations;
+  cache.reuse_count_since_setup = 0;
+  cache.row_offsets = assembly.local_matrix.row_offsets;
+  cache.column_indices = assembly.local_matrix.column_indices;
+  cache.values = assembly.local_matrix.values;
+}
+
+void RecordLaggedAmgReuse(
+    DistributedLaggedBoomerAmgCacheEntry& cache,
+    int iterations) noexcept {
+  cache.last_iterations = iterations;
+  ++cache.reuse_count_since_setup;
+}
+
 [[nodiscard]] std::string BuildDistributedSolveReport(
     const DistributedGenericDiffusionHypreSolveResult& result,
     const GenericDiffusionHypreSolveOptions& options) {
@@ -1091,6 +1183,32 @@ void ComputeDistributedResiduals(
       << "; boomeramg_max_iterations=" << kBoomerAmgPreconditionerMaxIterations
       << "; boomeramg_tolerance=" << kBoomerAmgPreconditionerTolerance
       << "; boomeramg_print_level=" << kBoomerAmgPreconditionerPrintLevel
+      << "; boomeramg_strong_threshold=" << kBoomerAmgStrongThreshold
+      << "; lagged_amg_enabled=" << (result.lagged_amg_enabled ? "true" : "false")
+      << "; lagged_amg_candidate=" << (result.lagged_amg_candidate ? "true" : "false")
+      << "; lagged_amg_reuse_attempted="
+      << (result.lagged_amg_reuse_attempted ? "true" : "false")
+      << "; lagged_amg_reuse_accepted="
+      << (result.lagged_amg_reuse_accepted ? "true" : "false")
+      << "; lagged_amg_rebuild_used="
+      << (result.lagged_amg_rebuild_used ? "true" : "false")
+      << "; lagged_amg_fallback_rebuild_used="
+      << (result.lagged_amg_fallback_rebuild_used ? "true" : "false")
+      << "; lagged_amg_local_matrix_rel_change="
+      << result.lagged_amg_local_matrix_rel_change
+      << "; lagged_amg_global_matrix_rel_change="
+      << result.lagged_amg_global_matrix_rel_change
+      << "; lagged_amg_rebuild_every=" << result.lagged_amg_rebuild_every
+      << "; lagged_amg_cached_reuse_count="
+      << result.lagged_amg_cached_reuse_count
+      << "; lagged_amg_cached_iterations=" << result.lagged_amg_cached_iterations
+      << "; lagged_amg_reuse_iterations=" << result.lagged_amg_reuse_iterations
+      << "; lagged_amg_reuse_count_after="
+      << result.lagged_amg_reuse_count_after
+      << "; lagged_amg_reuse_final_relative_residual="
+      << result.lagged_amg_reuse_final_relative_residual
+      << "; lagged_amg_reuse_setup_wall_s=" << result.lagged_amg_reuse_setup_wall_s
+      << "; lagged_amg_reuse_solve_wall_s=" << result.lagged_amg_reuse_solve_wall_s
       << "; gmres_relative_tolerance=" << options.relative_tolerance
       << "; gmres_max_iterations=" << options.max_iterations
       << "; gmres_krylov_dimension=" << options.krylov_dimension
@@ -1114,6 +1232,15 @@ void ComputeDistributedResiduals(
 }
 
 }  // namespace
+
+DistributedLaggedBoomerAmgCache::~DistributedLaggedBoomerAmgCache() {
+  for (auto& entry : entries) {
+    if (entry.boomeramg != nullptr) {
+      HYPRE_BoomerAMGDestroy(static_cast<HYPRE_Solver>(entry.boomeramg));
+      entry.boomeramg = nullptr;
+    }
+  }
+}
 
 bool DistributedLocalCsrMatrix::is_shape_complete() const noexcept {
   return local_row_end >= local_row_begin &&
@@ -1464,6 +1591,18 @@ DistributedGenericDiffusionAssemblyResult AssembleDistributedGenericDiffusionSys
 DistributedGenericDiffusionHypreSolveResult SolveDistributedGenericDiffusionHypre(
     const DistributedGenericDiffusionAssemblyResult& assembly,
     const GenericDiffusionHypreSolveOptions& options) noexcept {
+  return SolveDistributedGenericDiffusionHypre(
+      assembly,
+      options,
+      nullptr,
+      DistributedLaggedBoomerAmgSolveOptions{});
+}
+
+DistributedGenericDiffusionHypreSolveResult SolveDistributedGenericDiffusionHypre(
+    const DistributedGenericDiffusionAssemblyResult& assembly,
+    const GenericDiffusionHypreSolveOptions& options,
+    DistributedLaggedBoomerAmgCache* lagged_cache,
+    const DistributedLaggedBoomerAmgSolveOptions& lagged_options) noexcept {
   if (!assembly.success || !assembly.is_complete()) {
     return SolveFailure("distributed assembly is incomplete or failed", assembly.ownership);
   }
@@ -1513,33 +1652,40 @@ DistributedGenericDiffusionHypreSolveResult SolveDistributedGenericDiffusionHypr
     return SolveFailure("HYPRE matrix initialize failed", assembly.ownership, "IJMatrixInitialize");
   }
 
+  const HYPRE_Int local_row_count_int =
+      static_cast<HYPRE_Int>(assembly.ownership.local_row_count);
+  std::vector<HYPRE_BigInt> rows(assembly.ownership.local_row_count);
+  std::vector<HYPRE_Int> row_nonzero_counts(assembly.ownership.local_row_count);
+  std::vector<HYPRE_BigInt> matrix_columns;
+  std::vector<HYPRE_Complex> matrix_values;
+  matrix_columns.reserve(assembly.local_matrix.column_indices.size());
+  matrix_values.reserve(assembly.local_matrix.values.size());
   for (std::size_t local_row = 0; local_row < assembly.ownership.local_row_count; ++local_row) {
     const auto begin = assembly.local_matrix.row_offsets[local_row];
     const auto end = assembly.local_matrix.row_offsets[local_row + 1u];
     if (!FitsHypreInt(end - begin)) {
       return SolveFailure("row nonzero count exceeds HYPRE_Int range", assembly.ownership);
     }
-    HYPRE_Int ncols = static_cast<HYPRE_Int>(end - begin);
-    std::vector<HYPRE_BigInt> columns;
-    std::vector<HYPRE_Complex> values;
-    columns.reserve(static_cast<std::size_t>(ncols));
-    values.reserve(static_cast<std::size_t>(ncols));
-    for (std::size_t slot = begin; slot < end; ++slot) {
-      columns.push_back(static_cast<HYPRE_BigInt>(assembly.local_matrix.column_indices[slot]));
-      values.push_back(static_cast<HYPRE_Complex>(assembly.local_matrix.values[slot]));
-    }
-    const HYPRE_BigInt row =
+    rows[local_row] =
         static_cast<HYPRE_BigInt>(assembly.ownership.local_row_begin + local_row);
-    status = HYPRE_IJMatrixSetValues(
-        objects.ij_matrix,
-        1,
-        &ncols,
-        &row,
-        columns.data(),
-        values.data());
-    if (status != 0) {
-      return SolveFailure("HYPRE distributed matrix row insertion failed", assembly.ownership, "IJMatrixSetValues");
+    row_nonzero_counts[local_row] = static_cast<HYPRE_Int>(end - begin);
+    for (std::size_t slot = begin; slot < end; ++slot) {
+      matrix_columns.push_back(
+          static_cast<HYPRE_BigInt>(assembly.local_matrix.column_indices[slot]));
+      matrix_values.push_back(static_cast<HYPRE_Complex>(assembly.local_matrix.values[slot]));
     }
+  }
+  status = HYPRE_IJMatrixSetValues(
+      objects.ij_matrix,
+      local_row_count_int,
+      row_nonzero_counts.data(),
+      rows.data(),
+      matrix_columns.data(),
+      matrix_values.data());
+  if (status != 0) {
+    return SolveFailure("HYPRE distributed matrix row insertion failed",
+                        assembly.ownership,
+                        "IJMatrixSetValues");
   }
   status = HYPRE_IJMatrixAssemble(objects.ij_matrix);
   if (status != 0) {
@@ -1550,16 +1696,12 @@ DistributedGenericDiffusionHypreSolveResult SolveDistributedGenericDiffusionHypr
     return SolveFailure("HYPRE distributed matrix object extraction failed", assembly.ownership, "IJMatrixGetObject");
   }
 
-  std::vector<HYPRE_BigInt> rows(assembly.ownership.local_row_count);
   std::vector<HYPRE_Complex> rhs_values(assembly.ownership.local_row_count);
   std::vector<HYPRE_Complex> initial_values(assembly.ownership.local_row_count);
   for (std::size_t i = 0; i < assembly.ownership.local_row_count; ++i) {
-    rows[i] = static_cast<HYPRE_BigInt>(assembly.ownership.local_row_begin + i);
     rhs_values[i] = static_cast<HYPRE_Complex>(assembly.local_rhs[i]);
     initial_values[i] = static_cast<HYPRE_Complex>(assembly.local_scalar_old_flat[i]);
   }
-  const HYPRE_Int local_row_count_int =
-      static_cast<HYPRE_Int>(assembly.ownership.local_row_count);
 
   status = HYPRE_IJVectorCreate(assembly.ownership.communicator, row_begin, row_end, &objects.ij_rhs);
   if (status != 0) {
@@ -1624,40 +1766,236 @@ DistributedGenericDiffusionHypreSolveResult SolveDistributedGenericDiffusionHypr
   result.local_off_rank_column_count = assembly.local_off_rank_column_count;
   result.global_off_rank_column_count = assembly.global_off_rank_column_count;
 
+  DistributedLaggedBoomerAmgCacheEntry* lagged_entry = nullptr;
+  const bool lagged_enabled =
+      lagged_cache != nullptr &&
+      lagged_options.enabled &&
+      lagged_options.rebuild_every > 1 &&
+      std::isfinite(lagged_options.max_matrix_relative_change) &&
+      lagged_options.max_matrix_relative_change >= 0.0 &&
+      std::isfinite(lagged_options.max_iteration_growth) &&
+      lagged_options.max_iteration_growth >= 1.0;
+  if (lagged_enabled) {
+    result.lagged_amg_enabled = true;
+    result.lagged_amg_rebuild_every = lagged_options.rebuild_every;
+    if (lagged_cache->entries.size() <= lagged_options.group_index) {
+      lagged_cache->entries.resize(lagged_options.group_index + 1u);
+    }
+    lagged_entry = &lagged_cache->entries[lagged_options.group_index];
+    result.lagged_amg_local_matrix_rel_change =
+        LocalMatrixRelativeChange(assembly, *lagged_entry);
+    MPI_Allreduce(&result.lagged_amg_local_matrix_rel_change,
+                  &result.lagged_amg_global_matrix_rel_change,
+                  1,
+                  MPI_DOUBLE,
+                  MPI_MAX,
+                  assembly.ownership.communicator);
+    result.lagged_amg_cached_reuse_count =
+        lagged_entry->reuse_count_since_setup;
+    result.lagged_amg_cached_iterations = lagged_entry->last_iterations;
+    result.lagged_amg_candidate =
+        lagged_entry->valid &&
+        lagged_entry->boomeramg != nullptr &&
+        lagged_entry->reuse_count_since_setup < lagged_options.rebuild_every - 1 &&
+        result.lagged_amg_global_matrix_rel_change <=
+            lagged_options.max_matrix_relative_change;
+  }
+
+  if (result.lagged_amg_candidate && lagged_entry != nullptr) {
+    result.lagged_amg_reuse_attempted = true;
+    HYPRE_IJVector lagged_ij_solution = nullptr;
+    HYPRE_ParVector lagged_par_solution = nullptr;
+    HYPRE_Solver lagged_gmres = nullptr;
+    bool lagged_ok = true;
+    status = HYPRE_IJVectorCreate(
+        assembly.ownership.communicator,
+        row_begin,
+        row_end,
+        &lagged_ij_solution);
+    lagged_ok = status == 0;
+    if (lagged_ok) {
+      status = HYPRE_IJVectorSetObjectType(lagged_ij_solution, HYPRE_PARCSR);
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      status = HYPRE_IJVectorInitialize(lagged_ij_solution);
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      status = HYPRE_IJVectorSetValues(
+          lagged_ij_solution,
+          local_row_count_int,
+          rows.data(),
+          initial_values.data());
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      status = HYPRE_IJVectorAssemble(lagged_ij_solution);
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      status = HYPRE_IJVectorGetObject(
+          lagged_ij_solution,
+          reinterpret_cast<void**>(&lagged_par_solution));
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      status = HYPRE_ParCSRGMRESCreate(assembly.ownership.communicator, &lagged_gmres);
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      status = HYPRE_ParCSRGMRESSetTol(lagged_gmres, options.relative_tolerance);
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      status = HYPRE_ParCSRGMRESSetMaxIter(lagged_gmres, options.max_iterations);
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      status = HYPRE_ParCSRGMRESSetKDim(lagged_gmres, options.krylov_dimension);
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      status = HYPRE_ParCSRGMRESSetLogging(
+          lagged_gmres,
+          options.logging_enabled ? 1 : 0);
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      status = HYPRE_ParCSRGMRESSetPrintLevel(lagged_gmres, options.print_level);
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      status = HYPRE_ParCSRGMRESSetPrecond(
+          lagged_gmres,
+          reinterpret_cast<HYPRE_PtrToParSolverFcn>(HYPRE_BoomerAMGSolve),
+          NoOpParSolverSetup,
+          static_cast<HYPRE_Solver>(lagged_entry->boomeramg));
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      const auto lagged_setup_timer = std::chrono::steady_clock::now();
+      status = HYPRE_ParCSRGMRESSetup(
+          lagged_gmres,
+          parcsr_matrix,
+          par_rhs,
+          lagged_par_solution);
+      result.lagged_amg_reuse_setup_wall_s = ElapsedSecondsSince(lagged_setup_timer);
+      result.hypre_setup_wall_s += result.lagged_amg_reuse_setup_wall_s;
+      lagged_ok = status == 0;
+    }
+    if (lagged_ok) {
+      const auto lagged_solve_timer = std::chrono::steady_clock::now();
+      status = HYPRE_ParCSRGMRESSolve(
+          lagged_gmres,
+          parcsr_matrix,
+          par_rhs,
+          lagged_par_solution);
+      result.lagged_amg_reuse_solve_wall_s = ElapsedSecondsSince(lagged_solve_timer);
+      result.hypre_solve_wall_s += result.lagged_amg_reuse_solve_wall_s;
+      (void)HYPRE_ParCSRGMRESGetNumIterations(
+          lagged_gmres,
+          &result.lagged_amg_reuse_iterations);
+      (void)HYPRE_ParCSRGMRESGetFinalRelativeResidualNorm(
+          lagged_gmres,
+          &result.lagged_amg_reuse_final_relative_residual);
+      lagged_ok = status == 0;
+    }
+    if (lagged_gmres != nullptr) {
+      HYPRE_ParCSRGMRESDestroy(lagged_gmres);
+    }
+    if (lagged_ok) {
+      std::vector<HYPRE_Complex> lagged_solution_values(assembly.ownership.local_row_count);
+      status = HYPRE_IJVectorGetValues(
+          lagged_ij_solution,
+          local_row_count_int,
+          rows.data(),
+          lagged_solution_values.data());
+      lagged_ok = status == 0;
+      result.local_scalar_new.resize(assembly.ownership.local_row_count);
+      for (std::size_t i = 0; lagged_ok && i < assembly.ownership.local_row_count; ++i) {
+        result.local_scalar_new[i] = static_cast<double>(lagged_solution_values[i]);
+        lagged_ok = std::isfinite(result.local_scalar_new[i]);
+      }
+    }
+    if (lagged_ij_solution != nullptr) {
+      HYPRE_IJVectorDestroy(lagged_ij_solution);
+    }
+    int local_lagged_ok = lagged_ok ? 1 : 0;
+    int global_lagged_ok = 0;
+    MPI_Allreduce(&local_lagged_ok,
+                  &global_lagged_ok,
+                  1,
+                  MPI_INT,
+                  MPI_MIN,
+                  assembly.ownership.communicator);
+    lagged_ok = global_lagged_ok != 0;
+    if (lagged_ok) {
+      ComputeDistributedResiduals(result, assembly);
+      lagged_ok =
+          result.global_residual_linf_relative <= options.relative_tolerance * 100.0 &&
+          result.lagged_amg_reuse_iterations <=
+              static_cast<int>(std::ceil(lagged_options.max_iteration_growth *
+                                         std::max(1, lagged_entry->last_iterations)));
+    }
+    local_lagged_ok = lagged_ok ? 1 : 0;
+    MPI_Allreduce(&local_lagged_ok,
+                  &global_lagged_ok,
+                  1,
+                  MPI_INT,
+                  MPI_MIN,
+                  assembly.ownership.communicator);
+    if (global_lagged_ok != 0) {
+      result.lagged_amg_reuse_accepted = true;
+      result.gmres_iterations = result.lagged_amg_reuse_iterations;
+      result.gmres_final_relative_residual =
+          result.lagged_amg_reuse_final_relative_residual;
+      RecordLaggedAmgReuse(*lagged_entry, result.gmres_iterations);
+      result.lagged_amg_reuse_count_after =
+          lagged_entry->reuse_count_since_setup;
+      result.success = true;
+      result.report_line = BuildDistributedSolveReport(result, options);
+      return result;
+    }
+    result.local_scalar_new.clear();
+    result.lagged_amg_fallback_rebuild_used = true;
+    (void)HYPRE_ClearAllErrors();
+  }
+
   status = HYPRE_ParCSRGMRESCreate(assembly.ownership.communicator, &objects.gmres);
   if (status != 0) {
     return SolveFailure("HYPRE distributed GMRES creation failed", assembly.ownership, "ParCSRGMRESCreate");
   }
-  status = HYPRE_BoomerAMGCreate(&objects.boomeramg);
-  if (status != 0) {
-    return SolveFailure("HYPRE distributed BoomerAMG creation failed", assembly.ownership, "BoomerAMGCreate");
+  HYPRE_Solver active_boomeramg = nullptr;
+  if (lagged_enabled && lagged_entry != nullptr) {
+    if (lagged_entry->boomeramg != nullptr) {
+      HYPRE_BoomerAMGDestroy(static_cast<HYPRE_Solver>(lagged_entry->boomeramg));
+      lagged_entry->boomeramg = nullptr;
+    }
+    status = HYPRE_BoomerAMGCreate(
+        reinterpret_cast<HYPRE_Solver*>(&lagged_entry->boomeramg));
+    if (status != 0) {
+      return SolveFailure("HYPRE distributed BoomerAMG creation failed",
+                          assembly.ownership,
+                          "BoomerAMGCreate");
+    }
+    active_boomeramg = static_cast<HYPRE_Solver>(lagged_entry->boomeramg);
+    result.lagged_amg_rebuild_used = true;
+  } else {
+    status = HYPRE_BoomerAMGCreate(&objects.boomeramg);
+    if (status != 0) {
+      return SolveFailure("HYPRE distributed BoomerAMG creation failed",
+                          assembly.ownership,
+                          "BoomerAMGCreate");
+    }
+    active_boomeramg = objects.boomeramg;
   }
-  status = HYPRE_BoomerAMGSetPrintLevel(
-      objects.boomeramg,
-      kBoomerAmgPreconditionerPrintLevel);
-  if (status != 0) {
-    return SolveFailure("HYPRE distributed BoomerAMG print-level setup failed",
+  const auto amg_setup = ConfigureBoomerAmg(active_boomeramg);
+  if (amg_setup.status != 0) {
+    return SolveFailure(amg_setup.reason,
                         assembly.ownership,
-                        "BoomerAMGSetPrintLevel",
-                        status);
-  }
-  status = HYPRE_BoomerAMGSetMaxIter(
-      objects.boomeramg,
-      kBoomerAmgPreconditionerMaxIterations);
-  if (status != 0) {
-    return SolveFailure("HYPRE distributed BoomerAMG max-iteration setup failed",
-                        assembly.ownership,
-                        "BoomerAMGSetMaxIter",
-                        status);
-  }
-  status = HYPRE_BoomerAMGSetTol(
-      objects.boomeramg,
-      kBoomerAmgPreconditionerTolerance);
-  if (status != 0) {
-    return SolveFailure("HYPRE distributed BoomerAMG tolerance setup failed",
-                        assembly.ownership,
-                        "BoomerAMGSetTol",
-                        status);
+                        amg_setup.phase,
+                        amg_setup.status);
   }
   status = HYPRE_ParCSRGMRESSetTol(objects.gmres, options.relative_tolerance);
   if (status != 0) {
@@ -1683,19 +2021,19 @@ DistributedGenericDiffusionHypreSolveResult SolveDistributedGenericDiffusionHypr
       objects.gmres,
       reinterpret_cast<HYPRE_PtrToParSolverFcn>(HYPRE_BoomerAMGSolve),
       reinterpret_cast<HYPRE_PtrToParSolverFcn>(HYPRE_BoomerAMGSetup),
-      objects.boomeramg);
+      active_boomeramg);
   if (status != 0) {
     return SolveFailure("HYPRE distributed GMRES preconditioner setup failed", assembly.ownership, "ParCSRGMRESSetPrecond");
   }
   const auto setup_timer = std::chrono::steady_clock::now();
   status = HYPRE_ParCSRGMRESSetup(objects.gmres, parcsr_matrix, par_rhs, par_solution);
-  result.hypre_setup_wall_s = ElapsedSecondsSince(setup_timer);
+  result.hypre_setup_wall_s += ElapsedSecondsSince(setup_timer);
   if (status != 0) {
     return SolveFailure("HYPRE distributed GMRES setup failed", assembly.ownership, "ParCSRGMRESSetup");
   }
   const auto solve_timer = std::chrono::steady_clock::now();
   status = HYPRE_ParCSRGMRESSolve(objects.gmres, parcsr_matrix, par_rhs, par_solution);
-  result.hypre_solve_wall_s = ElapsedSecondsSince(solve_timer);
+  result.hypre_solve_wall_s += ElapsedSecondsSince(solve_timer);
   if (status != 0) {
     int failed_iterations = 0;
     double failed_residual = 0.0;
@@ -1741,6 +2079,11 @@ DistributedGenericDiffusionHypreSolveResult SolveDistributedGenericDiffusionHypr
   ComputeDistributedResiduals(result, assembly);
   if (result.global_residual_linf_relative > options.relative_tolerance * 100.0) {
     return SolveFailure("HYPRE distributed recomputed residual exceeds tolerance", assembly.ownership);
+  }
+  if (lagged_enabled && lagged_entry != nullptr) {
+    StoreLaggedAmgSetupSnapshot(*lagged_entry, assembly, result.gmres_iterations);
+    result.lagged_amg_reuse_count_after =
+        lagged_entry->reuse_count_since_setup;
   }
   result.success = true;
   result.report_line = BuildDistributedSolveReport(result, options);
@@ -1857,6 +2200,23 @@ bool ValidateDistributedGenericDiffusionHypreSolveDiagnostics(
          Contains(line, "boomeramg_max_iterations=1") &&
          Contains(line, "boomeramg_tolerance=0") &&
          Contains(line, "boomeramg_print_level=0") &&
+         Contains(line, "boomeramg_strong_threshold=0.5") &&
+         Contains(line, "lagged_amg_enabled=") &&
+         Contains(line, "lagged_amg_candidate=") &&
+         Contains(line, "lagged_amg_reuse_attempted=") &&
+         Contains(line, "lagged_amg_reuse_accepted=") &&
+         Contains(line, "lagged_amg_rebuild_used=") &&
+         Contains(line, "lagged_amg_fallback_rebuild_used=") &&
+         Contains(line, "lagged_amg_local_matrix_rel_change=") &&
+         Contains(line, "lagged_amg_global_matrix_rel_change=") &&
+         Contains(line, "lagged_amg_rebuild_every=") &&
+         Contains(line, "lagged_amg_cached_reuse_count=") &&
+         Contains(line, "lagged_amg_cached_iterations=") &&
+         Contains(line, "lagged_amg_reuse_iterations=") &&
+         Contains(line, "lagged_amg_reuse_count_after=") &&
+         Contains(line, "lagged_amg_reuse_final_relative_residual=") &&
+         Contains(line, "lagged_amg_reuse_setup_wall_s=") &&
+         Contains(line, "lagged_amg_reuse_solve_wall_s=") &&
          Contains(line, "gmres_relative_tolerance=") &&
          Contains(line, "gmres_max_iterations=") &&
         Contains(line, "gmres_krylov_dimension=") &&

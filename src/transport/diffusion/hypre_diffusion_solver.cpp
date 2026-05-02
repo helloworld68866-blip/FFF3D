@@ -21,6 +21,7 @@ constexpr const char* kHypreBackend = "hypre_parcsr_gmres_boomeramg";
 constexpr int kBoomerAmgPreconditionerMaxIterations = 1;
 constexpr double kBoomerAmgPreconditionerTolerance = 0.0;
 constexpr int kBoomerAmgPreconditionerPrintLevel = 0;
+constexpr double kBoomerAmgStrongThreshold = 0.5;
 
 [[nodiscard]] bool Contains(const std::string& text, const char* token) noexcept {
   return text.find(token) != std::string::npos;
@@ -168,6 +169,7 @@ struct HypreObjects {
       << "; boomeramg_max_iterations=" << kBoomerAmgPreconditionerMaxIterations
       << "; boomeramg_tolerance=" << kBoomerAmgPreconditionerTolerance
       << "; boomeramg_print_level=" << kBoomerAmgPreconditionerPrintLevel
+      << "; boomeramg_strong_threshold=" << kBoomerAmgStrongThreshold
       << "; gmres_relative_tolerance=" << options.relative_tolerance
       << "; gmres_max_iterations=" << options.max_iterations
       << "; gmres_krylov_dimension=" << options.krylov_dimension
@@ -267,32 +269,35 @@ GenericDiffusionHypreSolveResult SolveGenericDiffusionHypre(
     return HypreFailure("HYPRE matrix initialize failed", "IJMatrixInitialize", status);
   }
 
+  std::vector<HYPRE_BigInt> rows(assembly.row_count);
+  std::vector<HYPRE_Int> row_nonzero_counts(assembly.row_count);
+  std::vector<HYPRE_BigInt> matrix_columns;
+  std::vector<HYPRE_Complex> matrix_values;
+  matrix_columns.reserve(assembly.matrix.column_indices.size());
+  matrix_values.reserve(assembly.matrix.values.size());
   for (std::size_t row = 0; row < assembly.matrix.row_count; ++row) {
     const auto begin = assembly.matrix.row_offsets[row];
     const auto end = assembly.matrix.row_offsets[row + 1u];
     if (!FitsHypreInt(end - begin)) {
       return HypreFailure("row nonzero count exceeds HYPRE_Int range");
     }
-    auto ncols = static_cast<HYPRE_Int>(end - begin);
-    std::vector<HYPRE_BigInt> cols;
-    std::vector<HYPRE_Complex> values;
-    cols.reserve(static_cast<std::size_t>(ncols));
-    values.reserve(static_cast<std::size_t>(ncols));
+    rows[row] = static_cast<HYPRE_BigInt>(row);
+    row_nonzero_counts[row] = static_cast<HYPRE_Int>(end - begin);
     for (std::size_t entry = begin; entry < end; ++entry) {
-      cols.push_back(static_cast<HYPRE_BigInt>(assembly.matrix.column_indices[entry]));
-      values.push_back(static_cast<HYPRE_Complex>(assembly.matrix.values[entry]));
+      matrix_columns.push_back(
+          static_cast<HYPRE_BigInt>(assembly.matrix.column_indices[entry]));
+      matrix_values.push_back(static_cast<HYPRE_Complex>(assembly.matrix.values[entry]));
     }
-    const HYPRE_BigInt hypre_row = static_cast<HYPRE_BigInt>(row);
-    status = HYPRE_IJMatrixSetValues(
-        objects.ij_matrix,
-        1,
-        &ncols,
-        &hypre_row,
-        cols.data(),
-        values.data());
-    if (status != 0) {
-      return HypreFailure("HYPRE matrix row insertion failed", "IJMatrixSetValues", status);
-    }
+  }
+  status = HYPRE_IJMatrixSetValues(
+      objects.ij_matrix,
+      row_count_int,
+      row_nonzero_counts.data(),
+      rows.data(),
+      matrix_columns.data(),
+      matrix_values.data());
+  if (status != 0) {
+    return HypreFailure("HYPRE matrix row insertion failed", "IJMatrixSetValues", status);
   }
 
   status = HYPRE_IJMatrixAssemble(objects.ij_matrix);
@@ -304,11 +309,9 @@ GenericDiffusionHypreSolveResult SolveGenericDiffusionHypre(
     return HypreFailure("HYPRE matrix object extraction failed", "IJMatrixGetObject", status);
   }
 
-  std::vector<HYPRE_BigInt> rows(assembly.row_count);
   std::vector<HYPRE_Complex> rhs_values(assembly.row_count);
   std::vector<HYPRE_Complex> initial_values(assembly.row_count);
   for (std::size_t row = 0; row < assembly.row_count; ++row) {
-    rows[row] = static_cast<HYPRE_BigInt>(row);
     rhs_values[row] = static_cast<HYPRE_Complex>(assembly.rhs[row]);
     initial_values[row] = static_cast<HYPRE_Complex>(assembly.scalar_old_flat[row]);
   }
@@ -397,6 +400,14 @@ GenericDiffusionHypreSolveResult SolveGenericDiffusionHypre(
   if (status != 0) {
     return HypreFailure("HYPRE BoomerAMG tolerance setup failed",
                         "BoomerAMGSetTol",
+                        status);
+  }
+  status = HYPRE_BoomerAMGSetStrongThreshold(
+      objects.boomeramg,
+      kBoomerAmgStrongThreshold);
+  if (status != 0) {
+    return HypreFailure("HYPRE BoomerAMG strong-threshold setup failed",
+                        "BoomerAMGSetStrongThreshold",
                         status);
   }
   status = HYPRE_ParCSRGMRESSetTol(objects.gmres, options.relative_tolerance);
@@ -513,6 +524,7 @@ bool ValidateGenericDiffusionHypreSolveDiagnostics(
          Contains(line, "boomeramg_max_iterations=1") &&
          Contains(line, "boomeramg_tolerance=0") &&
          Contains(line, "boomeramg_print_level=0") &&
+         Contains(line, "boomeramg_strong_threshold=0.5") &&
          Contains(line, "gmres_relative_tolerance=") &&
          Contains(line, "gmres_max_iterations=") &&
          Contains(line, "gmres_krylov_dimension=") &&

@@ -396,6 +396,66 @@ int main(int argc, char** argv) {
     }
 
     {
+      const auto layout = Layout(4, 2, 2);
+      const auto geometry = BuildGeometry(layout, 1.0, 3.0, 0.5, 1.2);
+      const auto distributed =
+          BuildDistributedProblem(MPI_COMM_WORLD, layout, geometry, 0.1, 4.0, PatchBoundary());
+      const auto assembly = AssembleDistributedGenericDiffusionSystem(distributed);
+      DEC3D_CHECK(assembly.success);
+      dec3d::transport::DistributedLaggedBoomerAmgCache cache;
+      auto lagged = dec3d::transport::DistributedLaggedBoomerAmgSolveOptions{};
+      lagged.enabled = true;
+      lagged.group_index = 0u;
+      lagged.rebuild_every = 4;
+      lagged.max_matrix_relative_change = 0.1;
+      lagged.max_iteration_growth = 2.0;
+      const auto first = SolveDistributedGenericDiffusionHypre(
+          assembly,
+          dec3d::transport::GenericDiffusionHypreSolveOptions{},
+          &cache,
+          lagged);
+      DEC3D_CHECK(first.success);
+      DEC3D_CHECK(first.lagged_amg_rebuild_used);
+      DEC3D_CHECK(!first.lagged_amg_reuse_accepted);
+      const auto second = SolveDistributedGenericDiffusionHypre(
+          assembly,
+          dec3d::transport::GenericDiffusionHypreSolveOptions{},
+          &cache,
+          lagged);
+      DEC3D_CHECK(second.success);
+      DEC3D_CHECK(second.lagged_amg_candidate);
+      DEC3D_CHECK(second.lagged_amg_reuse_attempted);
+      DEC3D_CHECK(second.lagged_amg_reuse_accepted);
+      DEC3D_CHECK_EQ(second.lagged_amg_cached_reuse_count, 0);
+      DEC3D_CHECK_EQ(second.lagged_amg_reuse_count_after, 1);
+      DEC3D_CHECK(ValidateDistributedGenericDiffusionHypreSolveDiagnostics(second));
+      lagged.rebuild_every = 2;
+      const auto third = SolveDistributedGenericDiffusionHypre(
+          assembly,
+          dec3d::transport::GenericDiffusionHypreSolveOptions{},
+          &cache,
+          lagged);
+      DEC3D_CHECK(third.success);
+      DEC3D_CHECK(!third.lagged_amg_candidate);
+      DEC3D_CHECK(!third.lagged_amg_reuse_attempted);
+      DEC3D_CHECK(third.lagged_amg_rebuild_used);
+      DEC3D_CHECK_EQ(third.lagged_amg_cached_reuse_count, 1);
+      DEC3D_CHECK_EQ(third.lagged_amg_reuse_count_after, 0);
+      DEC3D_CHECK(ValidateDistributedGenericDiffusionHypreSolveDiagnostics(third));
+      const auto first_gathered = GatherDistributedScalarForTest(first, MPI_COMM_WORLD);
+      const auto second_gathered = GatherDistributedScalarForTest(second, MPI_COMM_WORLD);
+      const auto third_gathered = GatherDistributedScalarForTest(third, MPI_COMM_WORLD);
+      if (rank == 0) {
+        DEC3D_CHECK_EQ(first_gathered.size(), second_gathered.size());
+        DEC3D_CHECK_EQ(first_gathered.size(), third_gathered.size());
+        for (std::size_t i = 0; i < first_gathered.size(); ++i) {
+          CheckNear(first_gathered[i], second_gathered[i], 1.0e-9, "lagged AMG reuse parity");
+          CheckNear(first_gathered[i], third_gathered[i], 1.0e-9, "lagged AMG rebuild parity");
+        }
+      }
+    }
+
+    {
       // distributed_full_sphere_two_rank_origin_remap_and_radial_seam_coexist
       const auto layout = Layout(4, 4, 4);
       const auto geometry = BuildGeometry(layout, 0.0, 2.0, 0.0, kPi);

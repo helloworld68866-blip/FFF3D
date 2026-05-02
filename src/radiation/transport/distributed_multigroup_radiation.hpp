@@ -37,6 +37,11 @@ struct DistributedMultigroupRadiationOptions {
   RadiationFluxLimiterOptions radiation_flux_limiter{};
   DistributedRadiationBoundaryModel boundary_model{
       DistributedRadiationBoundaryModel::contract_zero_flux_or_scalar_remap};
+  dec3d::transport::DistributedLaggedBoomerAmgCache* lagged_amg_cache{nullptr};
+  bool lagged_amg_enabled{false};
+  int lagged_amg_rebuild_every{4};
+  double lagged_amg_max_matrix_relative_change{0.1};
+  double lagged_amg_max_iteration_growth{1.5};
   double radiation_energy_floor_erg_per_cm3{0.0};
   double electron_energy_floor_erg_per_cm3{0.0};
   double ion_energy_floor_erg_per_cm3{0.0};
@@ -84,6 +89,16 @@ struct DistributedMultigroupRadiationResult {
   double hypre_solve_wall_s{0.0};
   double writeback_wall_s{0.0};
   int solver_iterations{0};
+  bool lagged_amg_enabled{false};
+  int lagged_amg_rebuild_every{4};
+  double lagged_amg_max_matrix_relative_change{0.1};
+  double lagged_amg_max_iteration_growth{1.5};
+  std::size_t lagged_amg_candidate_count{0u};
+  std::size_t lagged_amg_reuse_attempted_count{0u};
+  std::size_t lagged_amg_reuse_accepted_count{0u};
+  std::size_t lagged_amg_rebuild_count{0u};
+  std::size_t lagged_amg_fallback_rebuild_count{0u};
+  double max_lagged_amg_global_matrix_rel_change{0.0};
 
   std::vector<double> delta_radiation_total_by_group;
   std::vector<double> source_gain_radiation_total_by_group;

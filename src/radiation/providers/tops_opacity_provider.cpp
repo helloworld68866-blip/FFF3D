@@ -618,6 +618,9 @@ TopsOpacityTableLoadResult LoadTopsOpacityTable(
     TopsOpacityTableLoadResult result;
     LoadMetadata(JoinPath(options.table_root, "metadata.json"), result.metadata);
     result.table.metadata = result.metadata;
+    result.table.multigroup_rows.reserve(result.metadata.multigroup_row_count);
+    result.table.multigroup_row_index.reserve(result.metadata.multigroup_row_count);
+    result.table.used_density_grid_by_temperature.reserve(result.metadata.temperature_count);
 
     std::ifstream input(JoinPath(options.table_root, "multigroup_opacities.csv"));
     if (!input) {
@@ -857,7 +860,8 @@ RadiationCoefficientProviderResult BuildRadiationCoefficientArrays(
   }
 
   double reference_weight_sum = 0.0;
-  const double reference_te = recovery.cells(0u, 0u, 0u).t_e_erg_per_particle;
+  const auto& recovered_cells = recovery.cells.storage();
+  const double reference_te = recovered_cells.front().t_e_erg_per_particle;
   for (std::size_t group = 0u; group < groups; ++group) {
     const auto blackbody =
         EvaluateGroupBlackbodyEnergyDensityValueOnly(group_layout, group, reference_te);
@@ -876,80 +880,79 @@ RadiationCoefficientProviderResult BuildRadiationCoefficientArrays(
     const double photon_energy_keV = GroupRepresentativeEnergyKeV(group_layout, group);
     std::unordered_map<ThermodynamicCacheKey,
                        CachedGroupCoefficients,
-                       ThermodynamicCacheKeyHash> exact_state_cache;
+                        ThermodynamicCacheKeyHash> exact_state_cache;
     exact_state_cache.reserve(local_cell_count);
-    for (std::size_t r = 0u; r < radial; ++r) {
-      for (std::size_t t = 0u; t < theta; ++t) {
-        for (std::size_t p = 0u; p < phi; ++p) {
-          const auto& cell = recovery.cells(r, t, p);
-          const ThermodynamicCacheKey key{
-              DoubleBits(cell.t_e_keV),
-              DoubleBits(cell.t_e_erg_per_particle),
-              DoubleBits(cell.rho_g_per_cm3)};
-          auto cache_it = exact_state_cache.find(key);
-          if (cache_it == exact_state_cache.end()) {
-            const auto lookup = LookupTopsOpacityValueOnly(table, cell.t_e_keV,
-                                                           cell.rho_g_per_cm3,
-                                                           photon_energy_keV, options);
-            if (!lookup.success) {
-              result.first_bad_group = group;
-              result.first_bad_radial = r;
-              result.first_bad_theta = t;
-              result.first_bad_phi = p;
-              return ProviderFailure(result, lookup.failure_reason);
-            }
-            const double kappaR_cm_inv = lookup.kappaR_mass_cm2_g * cell.rho_g_per_cm3;
-            const double kappaP_cm_inv = lookup.kappaP_mass_cm2_g * cell.rho_g_per_cm3;
-            if (!(kappaR_cm_inv > 0.0) || !(kappaP_cm_inv > 0.0) ||
-                !std::isfinite(kappaR_cm_inv) || !std::isfinite(kappaP_cm_inv)) {
-              result.first_bad_group = group;
-              result.first_bad_radial = r;
-              result.first_bad_theta = t;
-              result.first_bad_phi = p;
-              return ProviderFailure(result, "TOPS opacity provider produced nonphysical coefficients");
-            }
-            const double dbar = c / (3.0 * kappaR_cm_inv);
-            const auto blackbody =
-                EvaluateGroupBlackbodyEnergyDensityValueOnly(
-                    group_layout, group, cell.t_e_erg_per_particle);
-            if (!blackbody.success) {
-              result.first_bad_group = group;
-              result.first_bad_radial = r;
-              result.first_bad_theta = t;
-              result.first_bad_phi = p;
-              return ProviderFailure(result, blackbody.failure_reason);
-            }
-            cache_it = exact_state_cache.emplace(
-                key,
-                CachedGroupCoefficients{
-                    lookup.kappaR_mass_cm2_g,
-                    lookup.kappaP_mass_cm2_g,
-                    dbar,
-                    kappaP_cm_inv,
-                    blackbody.energy_density_erg_cm3}).first;
-            ++result.exact_state_cache_miss_count;
-          } else {
-            ++result.exact_state_cache_hit_count;
-          }
-
-          const auto& cached = cache_it->second;
-          result.coefficients.Dbar_cm2_per_s[group](r, t, p) = cached.dbar_cm2_s;
-          result.coefficients.kappaP_cm_inv[group](r, t, p) = cached.kappaP_cm_inv;
-          result.coefficients.B_erg_per_cm3[group](r, t, p) = cached.B_g_erg_cm3;
-          result.min_kappaR_mass_cm2_g =
-              std::min(result.min_kappaR_mass_cm2_g, cached.kappaR_mass_cm2_g);
-          result.max_kappaR_mass_cm2_g =
-              std::max(result.max_kappaR_mass_cm2_g, cached.kappaR_mass_cm2_g);
-          result.min_kappaP_mass_cm2_g =
-              std::min(result.min_kappaP_mass_cm2_g, cached.kappaP_mass_cm2_g);
-          result.max_kappaP_mass_cm2_g =
-              std::max(result.max_kappaP_mass_cm2_g, cached.kappaP_mass_cm2_g);
-          result.min_Dbar_cm2_s = std::min(result.min_Dbar_cm2_s, cached.dbar_cm2_s);
-          result.max_Dbar_cm2_s = std::max(result.max_Dbar_cm2_s, cached.dbar_cm2_s);
-          result.min_B_g_erg_cm3 = std::min(result.min_B_g_erg_cm3, cached.B_g_erg_cm3);
-          result.max_B_g_erg_cm3 = std::max(result.max_B_g_erg_cm3, cached.B_g_erg_cm3);
+    auto& dbar_values = result.coefficients.Dbar_cm2_per_s[group].storage();
+    auto& kappa_values = result.coefficients.kappaP_cm_inv[group].storage();
+    auto& blackbody_values = result.coefficients.B_erg_per_cm3[group].storage();
+    for (std::size_t cell_index = 0u; cell_index < local_cell_count; ++cell_index) {
+      const auto& cell = recovered_cells[cell_index];
+      const ThermodynamicCacheKey key{
+          DoubleBits(cell.t_e_keV),
+          DoubleBits(cell.t_e_erg_per_particle),
+          DoubleBits(cell.rho_g_per_cm3)};
+      auto cache_it = exact_state_cache.find(key);
+      if (cache_it == exact_state_cache.end()) {
+        const auto lookup = LookupTopsOpacityValueOnly(table, cell.t_e_keV,
+                                                       cell.rho_g_per_cm3,
+                                                       photon_energy_keV, options);
+        if (!lookup.success) {
+          result.first_bad_group = group;
+          result.first_bad_radial = cell_index / (theta * phi);
+          result.first_bad_theta = (cell_index / phi) % theta;
+          result.first_bad_phi = cell_index % phi;
+          return ProviderFailure(result, lookup.failure_reason);
         }
+        const double kappaR_cm_inv = lookup.kappaR_mass_cm2_g * cell.rho_g_per_cm3;
+        const double kappaP_cm_inv = lookup.kappaP_mass_cm2_g * cell.rho_g_per_cm3;
+        if (!(kappaR_cm_inv > 0.0) || !(kappaP_cm_inv > 0.0) ||
+            !std::isfinite(kappaR_cm_inv) || !std::isfinite(kappaP_cm_inv)) {
+          result.first_bad_group = group;
+          result.first_bad_radial = cell_index / (theta * phi);
+          result.first_bad_theta = (cell_index / phi) % theta;
+          result.first_bad_phi = cell_index % phi;
+          return ProviderFailure(result, "TOPS opacity provider produced nonphysical coefficients");
+        }
+        const double dbar = c / (3.0 * kappaR_cm_inv);
+        const auto blackbody =
+            EvaluateGroupBlackbodyEnergyDensityValueOnly(
+                group_layout, group, cell.t_e_erg_per_particle);
+        if (!blackbody.success) {
+          result.first_bad_group = group;
+          result.first_bad_radial = cell_index / (theta * phi);
+          result.first_bad_theta = (cell_index / phi) % theta;
+          result.first_bad_phi = cell_index % phi;
+          return ProviderFailure(result, blackbody.failure_reason);
+        }
+        cache_it = exact_state_cache.emplace(
+            key,
+            CachedGroupCoefficients{
+                lookup.kappaR_mass_cm2_g,
+                lookup.kappaP_mass_cm2_g,
+                dbar,
+                kappaP_cm_inv,
+                blackbody.energy_density_erg_cm3}).first;
+        ++result.exact_state_cache_miss_count;
+      } else {
+        ++result.exact_state_cache_hit_count;
       }
+
+      const auto& cached = cache_it->second;
+      dbar_values[cell_index] = cached.dbar_cm2_s;
+      kappa_values[cell_index] = cached.kappaP_cm_inv;
+      blackbody_values[cell_index] = cached.B_g_erg_cm3;
+      result.min_kappaR_mass_cm2_g =
+          std::min(result.min_kappaR_mass_cm2_g, cached.kappaR_mass_cm2_g);
+      result.max_kappaR_mass_cm2_g =
+          std::max(result.max_kappaR_mass_cm2_g, cached.kappaR_mass_cm2_g);
+      result.min_kappaP_mass_cm2_g =
+          std::min(result.min_kappaP_mass_cm2_g, cached.kappaP_mass_cm2_g);
+      result.max_kappaP_mass_cm2_g =
+          std::max(result.max_kappaP_mass_cm2_g, cached.kappaP_mass_cm2_g);
+      result.min_Dbar_cm2_s = std::min(result.min_Dbar_cm2_s, cached.dbar_cm2_s);
+      result.max_Dbar_cm2_s = std::max(result.max_Dbar_cm2_s, cached.dbar_cm2_s);
+      result.min_B_g_erg_cm3 = std::min(result.min_B_g_erg_cm3, cached.B_g_erg_cm3);
+      result.max_B_g_erg_cm3 = std::max(result.max_B_g_erg_cm3, cached.B_g_erg_cm3);
     }
   }
 

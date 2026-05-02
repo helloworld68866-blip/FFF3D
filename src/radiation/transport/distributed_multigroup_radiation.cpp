@@ -10,6 +10,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace dec3d::radiation {
 namespace {
@@ -28,14 +29,6 @@ constexpr std::size_t kNoFailingGroup = std::numeric_limits<std::size_t>::max();
 
 [[nodiscard]] const char* BoolToken(bool value) noexcept {
   return value ? "true" : "false";
-}
-
-[[nodiscard]] std::size_t FlatIndex(
-    const dec3d::state::CanonicalStateLayout& layout,
-    std::size_t radial,
-    std::size_t theta,
-    std::size_t phi) noexcept {
-  return (radial * layout.theta_cells + theta) * layout.phi_cells + phi;
 }
 
 [[nodiscard]] int AllreduceMinBool(MPI_Comm communicator, bool value) noexcept {
@@ -133,6 +126,22 @@ void BuildReport(DistributedMultigroupRadiationResult& result, const char* diagn
       << "; hypre_solve_wall_s=" << result.hypre_solve_wall_s
       << "; writeback_wall_s=" << result.writeback_wall_s
       << "; solver_iterations=" << result.solver_iterations
+      << "; lagged_amg_enabled=" << BoolToken(result.lagged_amg_enabled)
+      << "; lagged_amg_rebuild_every=" << result.lagged_amg_rebuild_every
+      << "; lagged_amg_max_matrix_relative_change="
+      << result.lagged_amg_max_matrix_relative_change
+      << "; lagged_amg_max_iteration_growth="
+      << result.lagged_amg_max_iteration_growth
+      << "; lagged_amg_candidate_count=" << result.lagged_amg_candidate_count
+      << "; lagged_amg_reuse_attempted_count="
+      << result.lagged_amg_reuse_attempted_count
+      << "; lagged_amg_reuse_accepted_count="
+      << result.lagged_amg_reuse_accepted_count
+      << "; lagged_amg_rebuild_count=" << result.lagged_amg_rebuild_count
+      << "; lagged_amg_fallback_rebuild_count="
+      << result.lagged_amg_fallback_rebuild_count
+      << "; max_lagged_amg_global_matrix_rel_change="
+      << result.max_lagged_amg_global_matrix_rel_change
       << "; radiation_flux_limiter_enabled="
       << BoolToken(result.radiation_flux_limiter_enabled)
       << "; radiation_flux_limiter_model=" << result.radiation_flux_limiter_model
@@ -252,15 +261,14 @@ void BuildReport(DistributedMultigroupRadiationResult& result, const char* diagn
   diffusion.local_coefficient_B =
       dec3d::core::Array3D<double>(layout.radial_cells, layout.theta_cells, layout.phi_cells, 0.0);
   const double c = dec3d::physics::PhysicsConstantsCGS::speed_of_light_cm_per_s;
-  for (std::size_t r = 0; r < layout.radial_cells; ++r) {
-    for (std::size_t t = 0; t < layout.theta_cells; ++t) {
-      for (std::size_t p = 0; p < layout.phi_cells; ++p) {
-        const double kappa = coefficients.kappaP_cm_inv[group](r, t, p);
-        const double b = coefficients.B_erg_per_cm3[group](r, t, p);
-        diffusion.local_coefficient_C(r, t, p) = -c * kappa;
-        diffusion.local_coefficient_B(r, t, p) = c * kappa * b;
-      }
-    }
+  const auto& kappa_values = coefficients.kappaP_cm_inv[group].storage();
+  const auto& blackbody_values = coefficients.B_erg_per_cm3[group].storage();
+  auto& c_values = diffusion.local_coefficient_C.storage();
+  auto& b_values = diffusion.local_coefficient_B.storage();
+  for (std::size_t cell = 0u; cell < kappa_values.size(); ++cell) {
+    const double kappa = kappa_values[cell];
+    c_values[cell] = -c * kappa;
+    b_values[cell] = c * kappa * blackbody_values[cell];
   }
   if (face_effective != nullptr && face_effective->enabled) {
     diffusion.face_effective_coefficients = *face_effective;
@@ -300,6 +308,11 @@ DistributedMultigroupRadiationResult ApplyDistributedProviderFedMultigroupRadiat
   result.table_reused_across_steps = options.table_reused_across_steps;
   result.per_step_csv_io = false;
   result.per_lookup_full_table_scan = false;
+  result.lagged_amg_enabled = options.lagged_amg_enabled;
+  result.lagged_amg_rebuild_every = options.lagged_amg_rebuild_every;
+  result.lagged_amg_max_matrix_relative_change =
+      options.lagged_amg_max_matrix_relative_change;
+  result.lagged_amg_max_iteration_growth = options.lagged_amg_max_iteration_growth;
   result.marshak_enabled =
       options.boundary_model == DistributedRadiationBoundaryModel::thesis_marshak_vacuum;
   result.radiation_flux_limiter_enabled =
@@ -450,11 +463,42 @@ DistributedMultigroupRadiationResult ApplyDistributedProviderFedMultigroupRadiat
 
     auto solve_options = options.solve_options;
     solve_options.communicator = communicator;
+    dec3d::transport::DistributedLaggedBoomerAmgSolveOptions lagged_options;
+    lagged_options.enabled = options.lagged_amg_enabled;
+    lagged_options.group_index = group;
+    lagged_options.rebuild_every = options.lagged_amg_rebuild_every;
+    lagged_options.max_matrix_relative_change =
+        options.lagged_amg_max_matrix_relative_change;
+    lagged_options.max_iteration_growth = options.lagged_amg_max_iteration_growth;
     const auto solve =
-        dec3d::transport::SolveDistributedGenericDiffusionHypre(assembly, solve_options);
+        dec3d::transport::SolveDistributedGenericDiffusionHypre(
+            assembly,
+            solve_options,
+            options.lagged_amg_cache,
+            lagged_options);
     result.hypre_setup_wall_s += solve.hypre_setup_wall_s;
     result.hypre_solve_wall_s += solve.hypre_solve_wall_s;
     result.solver_iterations += solve.gmres_iterations;
+    if (solve.lagged_amg_candidate) {
+      ++result.lagged_amg_candidate_count;
+    }
+    if (solve.lagged_amg_reuse_attempted) {
+      ++result.lagged_amg_reuse_attempted_count;
+    }
+    if (solve.lagged_amg_reuse_accepted) {
+      ++result.lagged_amg_reuse_accepted_count;
+    }
+    if (solve.lagged_amg_rebuild_used) {
+      ++result.lagged_amg_rebuild_count;
+    }
+    if (solve.lagged_amg_fallback_rebuild_used) {
+      ++result.lagged_amg_fallback_rebuild_count;
+    }
+    if (std::isfinite(solve.lagged_amg_global_matrix_rel_change)) {
+      result.max_lagged_amg_global_matrix_rel_change =
+          std::max(result.max_lagged_amg_global_matrix_rel_change,
+                   solve.lagged_amg_global_matrix_rel_change);
+    }
     local_group_ok = solve.success &&
                      dec3d::transport::ValidateDistributedGenericDiffusionHypreSolveDiagnostics(solve) &&
                      solve.local_scalar_new.size() == ownership.local_row_count;
@@ -472,22 +516,18 @@ DistributedMultigroupRadiationResult ApplyDistributedProviderFedMultigroupRadiat
     result.per_group_solve_reports.push_back(solve.report_line);
     ++result.per_group_solve_count;
 
-    std::size_t offset = 0u;
-    for (std::size_t r = 0; r < problem.local_state.layout.radial_cells; ++r) {
-      for (std::size_t t = 0; t < problem.local_state.layout.theta_cells; ++t) {
-        for (std::size_t p = 0; p < problem.local_state.layout.phi_cells; ++p) {
-          const double value = solve.local_scalar_new[offset++];
-          if (!std::isfinite(value) || value < options.radiation_energy_floor_erg_per_cm3) {
-            result.first_failing_group_index = group;
-            result.global_stage_ok = false;
-            return Fail(result,
-                        "distributed radiation group solution violated floor",
-                        communicator,
-                        true);
-          }
-          staged_groups[group](r, t, p) = value;
-        }
+    auto& staged_group_values = staged_groups[group].storage();
+    for (std::size_t cell = 0u; cell < solve.local_scalar_new.size(); ++cell) {
+      const double value = solve.local_scalar_new[cell];
+      if (!std::isfinite(value) || value < options.radiation_energy_floor_erg_per_cm3) {
+        result.first_failing_group_index = group;
+        result.global_stage_ok = false;
+        return Fail(result,
+                    "distributed radiation group solution violated floor",
+                    communicator,
+                    true);
       }
+      staged_group_values[cell] = value;
     }
   }
 
@@ -524,32 +564,41 @@ DistributedMultigroupRadiationResult ApplyDistributedProviderFedMultigroupRadiat
   std::vector<double> local_delta_radiation_by_group(result.group_count, 0.0);
   std::vector<double> local_source_gain_by_group(result.group_count, 0.0);
   const double c = dec3d::physics::PhysicsConstantsCGS::speed_of_light_cm_per_s;
-  for (std::size_t r = 0; r < problem.local_state.layout.radial_cells; ++r) {
-    for (std::size_t t = 0; t < problem.local_state.layout.theta_cells; ++t) {
-      for (std::size_t p = 0; p < problem.local_state.layout.phi_cells; ++p) {
-        const std::size_t local = FlatIndex(problem.local_state.layout, r, t, p);
-        const std::size_t global = ownership.local_row_begin + local;
-        const double volume = problem.global_geometry.cell_volumes[global];
-        double delta_electron = 0.0;
-        for (std::size_t group = 0; group < result.group_count; ++group) {
-          const double old_u = problem.local_state.radiation_groups[group](r, t, p);
-          const double new_u = staged_groups[group](r, t, p);
-          const double source = problem.dt_s * c *
-                                provider.coefficients.kappaP_cm_inv[group](r, t, p) *
-                                (provider.coefficients.B_erg_per_cm3[group](r, t, p) - new_u);
-          local_delta_radiation_by_group[group] += (new_u - old_u) * volume;
-          local_source_gain_by_group[group] += source * volume;
-          delta_electron -= source;
-        }
-        staged_e(r, t, p) = problem.local_state.e_electron(r, t, p) + delta_electron;
-        staged_total(r, t, p) = problem.local_state.e_fluid_total(r, t, p) + delta_electron;
-        local_staged_finite =
-            local_staged_finite &&
-            std::isfinite(staged_e(r, t, p)) &&
-            std::isfinite(staged_total(r, t, p)) &&
-            staged_e(r, t, p) >= options.electron_energy_floor_erg_per_cm3;
-      }
+  const auto& old_e_values = problem.local_state.e_electron.storage();
+  const auto& old_total_values = problem.local_state.e_fluid_total.storage();
+  auto& staged_e_values = staged_e.storage();
+  auto& staged_total_values = staged_total.storage();
+  std::vector<const std::vector<double>*> old_group_values(result.group_count, nullptr);
+  std::vector<const std::vector<double>*> new_group_values(result.group_count, nullptr);
+  std::vector<const std::vector<double>*> kappa_by_group(result.group_count, nullptr);
+  std::vector<const std::vector<double>*> blackbody_by_group(result.group_count, nullptr);
+  for (std::size_t group = 0; group < result.group_count; ++group) {
+    old_group_values[group] = &problem.local_state.radiation_groups[group].storage();
+    new_group_values[group] = &staged_groups[group].storage();
+    kappa_by_group[group] = &provider.coefficients.kappaP_cm_inv[group].storage();
+    blackbody_by_group[group] = &provider.coefficients.B_erg_per_cm3[group].storage();
+  }
+  for (std::size_t local = 0u; local < staged_e_values.size(); ++local) {
+    const std::size_t global = ownership.local_row_begin + local;
+    const double volume = problem.global_geometry.cell_volumes[global];
+    double delta_electron = 0.0;
+    for (std::size_t group = 0; group < result.group_count; ++group) {
+      const double old_u = (*old_group_values[group])[local];
+      const double new_u = (*new_group_values[group])[local];
+      const double source =
+          problem.dt_s * c * (*kappa_by_group[group])[local] *
+          ((*blackbody_by_group[group])[local] - new_u);
+      local_delta_radiation_by_group[group] += (new_u - old_u) * volume;
+      local_source_gain_by_group[group] += source * volume;
+      delta_electron -= source;
     }
+    staged_e_values[local] = old_e_values[local] + delta_electron;
+    staged_total_values[local] = old_total_values[local] + delta_electron;
+    local_staged_finite =
+        local_staged_finite &&
+        std::isfinite(staged_e_values[local]) &&
+        std::isfinite(staged_total_values[local]) &&
+        staged_e_values[local] >= options.electron_energy_floor_erg_per_cm3;
   }
 
   result.delta_radiation_total_by_group.assign(result.group_count, 0.0);
@@ -659,6 +708,16 @@ bool ValidateDistributedMultigroupRadiationDiagnostics(
          Contains(line, "hypre_solve_wall_s=") &&
          Contains(line, "writeback_wall_s=") &&
          Contains(line, "solver_iterations=") &&
+         Contains(line, "lagged_amg_enabled=") &&
+         Contains(line, "lagged_amg_rebuild_every=") &&
+         Contains(line, "lagged_amg_max_matrix_relative_change=") &&
+         Contains(line, "lagged_amg_max_iteration_growth=") &&
+         Contains(line, "lagged_amg_candidate_count=") &&
+         Contains(line, "lagged_amg_reuse_attempted_count=") &&
+         Contains(line, "lagged_amg_reuse_accepted_count=") &&
+         Contains(line, "lagged_amg_rebuild_count=") &&
+         Contains(line, "lagged_amg_fallback_rebuild_count=") &&
+         Contains(line, "max_lagged_amg_global_matrix_rel_change=") &&
          Contains(line, "radiation_flux_limiter_enabled=") &&
          Contains(line, "radiation_flux_limiter_model=") &&
          Contains(line, "face_limiter_time_level=old_time_lagged") &&

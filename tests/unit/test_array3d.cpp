@@ -15,7 +15,18 @@ int main() {
 
     field(1, 2, 3) = 42.5;
     DEC3D_CHECK_EQ(field(1, 2, 3), 42.5);
+    DEC3D_CHECK_EQ(field.checked(1, 2, 3), 42.5);
     DEC3D_CHECK_EQ(field(0, 0, 0), -1.0);
+    DEC3D_CHECK_EQ(field.linear_index_unchecked(1, 2, 3), static_cast<std::size_t>(23));
+    DEC3D_CHECK_EQ(field.data()[field.linear_index_unchecked(1, 2, 3)], 42.5);
+
+    bool out_of_bounds_threw = false;
+    try {
+      static_cast<void>(field.checked(2, 0, 0));
+    } catch (const std::out_of_range&) {
+      out_of_bounds_threw = true;
+    }
+    DEC3D_CHECK(out_of_bounds_threw);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

@@ -103,6 +103,22 @@ struct DistributedGenericDiffusionHypreSolveResult {
   double gmres_final_relative_residual{0.0};
   double hypre_setup_wall_s{0.0};
   double hypre_solve_wall_s{0.0};
+  bool lagged_amg_enabled{false};
+  bool lagged_amg_candidate{false};
+  bool lagged_amg_reuse_attempted{false};
+  bool lagged_amg_reuse_accepted{false};
+  bool lagged_amg_rebuild_used{false};
+  bool lagged_amg_fallback_rebuild_used{false};
+  double lagged_amg_local_matrix_rel_change{0.0};
+  double lagged_amg_global_matrix_rel_change{0.0};
+  int lagged_amg_rebuild_every{0};
+  int lagged_amg_cached_reuse_count{0};
+  int lagged_amg_cached_iterations{0};
+  int lagged_amg_reuse_iterations{0};
+  int lagged_amg_reuse_count_after{0};
+  double lagged_amg_reuse_final_relative_residual{0.0};
+  double lagged_amg_reuse_setup_wall_s{0.0};
+  double lagged_amg_reuse_solve_wall_s{0.0};
   double local_residual_l2{0.0};
   double global_residual_l2{0.0};
   double local_residual_linf{0.0};
@@ -114,6 +130,30 @@ struct DistributedGenericDiffusionHypreSolveResult {
   double max_abs_delta_global{0.0};
 
   [[nodiscard]] bool is_complete() const noexcept;
+};
+
+struct DistributedLaggedBoomerAmgCacheEntry {
+  void* boomeramg{nullptr};
+  bool valid{false};
+  int last_iterations{0};
+  int reuse_count_since_setup{0};
+  std::vector<std::size_t> row_offsets;
+  std::vector<std::size_t> column_indices;
+  std::vector<double> values;
+};
+
+struct DistributedLaggedBoomerAmgCache {
+  ~DistributedLaggedBoomerAmgCache();
+
+  std::vector<DistributedLaggedBoomerAmgCacheEntry> entries;
+};
+
+struct DistributedLaggedBoomerAmgSolveOptions {
+  bool enabled{false};
+  std::size_t group_index{0u};
+  int rebuild_every{4};
+  double max_matrix_relative_change{0.1};
+  double max_iteration_growth{1.5};
 };
 
 [[nodiscard]] DistributedDiffusionRowOwnership BuildDistributedDiffusionRowOwnership(
@@ -128,6 +168,12 @@ struct DistributedGenericDiffusionHypreSolveResult {
 [[nodiscard]] DistributedGenericDiffusionHypreSolveResult SolveDistributedGenericDiffusionHypre(
     const DistributedGenericDiffusionAssemblyResult& assembly,
     const GenericDiffusionHypreSolveOptions& options) noexcept;
+
+[[nodiscard]] DistributedGenericDiffusionHypreSolveResult SolveDistributedGenericDiffusionHypre(
+    const DistributedGenericDiffusionAssemblyResult& assembly,
+    const GenericDiffusionHypreSolveOptions& options,
+    DistributedLaggedBoomerAmgCache* lagged_cache,
+    const DistributedLaggedBoomerAmgSolveOptions& lagged_options) noexcept;
 
 [[nodiscard]] std::vector<double> GatherDistributedScalarForTest(
     const DistributedGenericDiffusionHypreSolveResult& result,

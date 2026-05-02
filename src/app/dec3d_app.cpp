@@ -115,6 +115,12 @@ struct RuntimeStageResult {
   double hypre_solve_wall_s{0.0};
   double writeback_wall_s{0.0};
   int solver_iterations{0};
+  std::size_t lagged_amg_candidate_count{0u};
+  std::size_t lagged_amg_reuse_attempted_count{0u};
+  std::size_t lagged_amg_reuse_accepted_count{0u};
+  std::size_t lagged_amg_rebuild_count{0u};
+  std::size_t lagged_amg_fallback_rebuild_count{0u};
+  double max_lagged_amg_global_matrix_rel_change{0.0};
   std::string report_line;
   std::string failure_reason;
   std::string failure_diagnostics;
@@ -1383,6 +1389,7 @@ void GatherLocalStateToRoot(
     const dec3d::radiation::TopsOpacityTable& opacity_table,
     const dec3d::io::InputDeckConfig& config,
     const dec3d::radiation::TopsOpacityProviderOptions& provider_options,
+    dec3d::transport::DistributedLaggedBoomerAmgCache* radiation_amg_cache,
     double dt_s) {
   dec3d::radiation::DistributedMultigroupRadiationProblem problem;
   problem.ownership = ownership;
@@ -1404,6 +1411,11 @@ void GatherLocalStateToRoot(
       RadiationFluxLimiterModelFromDeck(config.radiation.flux_limiter);
   options.solve_options.relative_tolerance = 1.0e-8;
   options.solve_options.max_iterations = 100;
+  options.lagged_amg_cache = radiation_amg_cache;
+  options.lagged_amg_enabled = radiation_amg_cache != nullptr;
+  options.lagged_amg_rebuild_every = 4;
+  options.lagged_amg_max_matrix_relative_change = 0.1;
+  options.lagged_amg_max_iteration_growth = 1.5;
   const auto radiation =
       dec3d::radiation::ApplyDistributedProviderFedMultigroupRadiation(problem, options);
   if (!radiation.success ||
@@ -1424,6 +1436,16 @@ void GatherLocalStateToRoot(
   result.hypre_solve_wall_s = radiation.hypre_solve_wall_s;
   result.writeback_wall_s = radiation.writeback_wall_s;
   result.solver_iterations = radiation.solver_iterations;
+  result.lagged_amg_candidate_count = radiation.lagged_amg_candidate_count;
+  result.lagged_amg_reuse_attempted_count =
+      radiation.lagged_amg_reuse_attempted_count;
+  result.lagged_amg_reuse_accepted_count =
+      radiation.lagged_amg_reuse_accepted_count;
+  result.lagged_amg_rebuild_count = radiation.lagged_amg_rebuild_count;
+  result.lagged_amg_fallback_rebuild_count =
+      radiation.lagged_amg_fallback_rebuild_count;
+  result.max_lagged_amg_global_matrix_rel_change =
+      radiation.max_lagged_amg_global_matrix_rel_change;
   std::ostringstream report;
   report << "diagnostic_id=p5.runtime.stage"
          << "; stage_id=R"
@@ -1545,6 +1567,12 @@ struct RuntimeLoopResult {
   double r_hypre_solve_wall_s{0.0};
   double r_writeback_wall_s{0.0};
   int r_solver_iterations{0};
+  std::size_t r_lagged_amg_candidate_count{0u};
+  std::size_t r_lagged_amg_reuse_attempted_count{0u};
+  std::size_t r_lagged_amg_reuse_accepted_count{0u};
+  std::size_t r_lagged_amg_rebuild_count{0u};
+  std::size_t r_lagged_amg_fallback_rebuild_count{0u};
+  double r_max_lagged_amg_global_matrix_rel_change{0.0};
   double a_coefficient_provider_wall_s{0.0};
   double a_assembly_wall_s{0.0};
   double a_hypre_setup_wall_s{0.0};
@@ -1770,6 +1798,17 @@ void AddRuntimeStagePerformance(RuntimeLoopResult& loop,
       loop.r_hypre_solve_wall_s += result.hypre_solve_wall_s;
       loop.r_writeback_wall_s += result.writeback_wall_s;
       loop.r_solver_iterations += result.solver_iterations;
+      loop.r_lagged_amg_candidate_count += result.lagged_amg_candidate_count;
+      loop.r_lagged_amg_reuse_attempted_count +=
+          result.lagged_amg_reuse_attempted_count;
+      loop.r_lagged_amg_reuse_accepted_count +=
+          result.lagged_amg_reuse_accepted_count;
+      loop.r_lagged_amg_rebuild_count += result.lagged_amg_rebuild_count;
+      loop.r_lagged_amg_fallback_rebuild_count +=
+          result.lagged_amg_fallback_rebuild_count;
+      loop.r_max_lagged_amg_global_matrix_rel_change =
+          std::max(loop.r_max_lagged_amg_global_matrix_rel_change,
+                   result.max_lagged_amg_global_matrix_rel_change);
       break;
     case 'A':
       loop.a_coefficient_provider_wall_s += result.coefficient_provider_wall_s;
@@ -1834,6 +1873,16 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
          << "; r_hypre_solve_wall_s=" << loop.r_hypre_solve_wall_s
          << "; r_writeback_wall_s=" << loop.r_writeback_wall_s
          << "; r_solver_iterations=" << loop.r_solver_iterations
+         << "; r_lagged_amg_candidate_count=" << loop.r_lagged_amg_candidate_count
+         << "; r_lagged_amg_reuse_attempted_count="
+         << loop.r_lagged_amg_reuse_attempted_count
+         << "; r_lagged_amg_reuse_accepted_count="
+         << loop.r_lagged_amg_reuse_accepted_count
+         << "; r_lagged_amg_rebuild_count=" << loop.r_lagged_amg_rebuild_count
+         << "; r_lagged_amg_fallback_rebuild_count="
+         << loop.r_lagged_amg_fallback_rebuild_count
+         << "; r_max_lagged_amg_global_matrix_rel_change="
+         << loop.r_max_lagged_amg_global_matrix_rel_change
          << "; a_coefficient_provider_wall_s=" << loop.a_coefficient_provider_wall_s
          << "; a_assembly_wall_s=" << loop.a_assembly_wall_s
          << "; a_hypre_setup_wall_s=" << loop.a_hypre_setup_wall_s
@@ -2368,6 +2417,7 @@ struct RuntimeStartPoint {
   bool allgather_after_distributed_stages = false;
   bool root_gather_for_checkpoint_outputs = false;
   bool runtime_scalar_output_uses_mpi_reduce = false;
+  dec3d::transport::DistributedLaggedBoomerAmgCache radiation_amg_cache;
   double time_s = start.time_s;
   dec3d::io::RuntimeOutputStepState output_state;
   output_state.last_field_checkpoint_time_s = start.time_s;
@@ -2474,6 +2524,7 @@ struct RuntimeStartPoint {
                                                           opacity_table,
                                                           config,
                                                           provider_options,
+                                                          &radiation_amg_cache,
                                                           dt_s);
           r_stage_backend =
               stage_result.success ? "hypre_parcsr_gmres_boomeramg" : r_stage_backend;
