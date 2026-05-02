@@ -1,6 +1,7 @@
 #include "mesh/spherical/spherical_mesh.hpp"
 #include "physics/units/physical_constants.hpp"
 #include "radiation/groups/radiation_group_layout.hpp"
+#include "radiation/providers/group_blackbody.hpp"
 #include "radiation/providers/tops_opacity_provider.hpp"
 #include "radiation/transport/multigroup_gray_radiation.hpp"
 #include "state/canonical_state/canonical_state.hpp"
@@ -140,6 +141,20 @@ void CheckNear(double actual, double expected, double tolerance, const char* lab
 }  // namespace
 
 int RunTests() {
+  {
+    const double kev_to_hz =
+        dec3d::physics::PhysicsConstantsCGS::erg_per_kev / PlanckConstantErgS();
+    const auto high_energy_group =
+        dec3d::radiation::MakeExplicitFrequencyRadiationGroupLayout(
+            {30.0 * kev_to_hz, 100.0 * kev_to_hz});
+    const auto blackbody =
+        dec3d::radiation::EvaluateGroupBlackbodyEnergyDensityValueOnly(
+            high_energy_group, 0u, 0.05 * dec3d::physics::PhysicsConstantsCGS::erg_per_kev);
+    DEC3D_CHECK(blackbody.success);
+    DEC3D_CHECK(blackbody.group_weight > 0.0);
+    DEC3D_CHECK(blackbody.energy_density_erg_cm3 > 0.0);
+  }
+
   {
     const auto table = dec3d::radiation::LoadTopsOpacityTable(MakeProviderOptions());
     DEC3D_CHECK(table.success);

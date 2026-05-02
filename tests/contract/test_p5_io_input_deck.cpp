@@ -30,6 +30,7 @@ case_name = p5_io_smoke # case name
 phase = P5 # phase
 stage_order = H,T,E,R,A # stage order
 step_count = 0 # initialization-only step count
+target_time_s = 1.0e-10 # optional physical stop time
 dt_mode = hydro_relaxed # dt mode
 cfl = 0.4 # CFL number
 output_dir = analysis/output/p5_io_smoke # output directory
@@ -127,6 +128,7 @@ int main() {
     DEC3D_CHECK(deck.success);
     DEC3D_CHECK(dec3d::io::ValidateInputDeckDiagnostics(deck));
     DEC3D_CHECK(deck.config.run.case_name == "p5_io_smoke");
+    DEC3D_CHECK(deck.config.run.target_time_s == 1.0e-10);
     DEC3D_CHECK(deck.config.run.stage_order.size() == 5u);
     DEC3D_CHECK(deck.config.mesh.radial_cells == 4u);
     DEC3D_CHECK(deck.config.radiation.group_edges_eV.size() == 3u);
@@ -149,6 +151,8 @@ int main() {
     DEC3D_CHECK(deck.report_line.find("restart_checkpoint_time_trigger_enabled=false") != std::string::npos);
     DEC3D_CHECK(deck.report_line.find("history_profile_time_trigger_enabled=true") != std::string::npos);
     DEC3D_CHECK(deck.report_line.find("history_profile_file=p5_io_smoke.his") != std::string::npos);
+    DEC3D_CHECK(deck.report_line.find("target_time_trigger_enabled=true") != std::string::npos);
+    DEC3D_CHECK(deck.report_line.find("target_time_s=1e-10") != std::string::npos);
   }
 
   {

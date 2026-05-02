@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <limits>
@@ -126,7 +127,22 @@ struct MacroZonedHydroSummary {
   std::string coarse_update_report_line;
   std::string prolong_report_line;
   std::vector<std::string> angular_stage_report_lines;
+  double detect_wall_s{0.0};
+  double restrict_wall_s{0.0};
+  double update_wall_s{0.0};
+  double radial_update_wall_s{0.0};
+  double theta_update_wall_s{0.0};
+  double phi_update_wall_s{0.0};
+  double state_update_wall_s{0.0};
+  double prolong_wall_s{0.0};
 };
+
+[[nodiscard]] double ElapsedHydroSecondsSince(
+    const std::chrono::steady_clock::time_point& start) {
+  return std::chrono::duration<double>(
+             std::chrono::steady_clock::now() - start)
+      .count();
+}
 
 void AppendDiagnostic(
     dec3d::core::DiagnosticsPayload& diagnostics,
@@ -2253,13 +2269,32 @@ void StoreMacroZoneStates(
     std::size_t theta_begin,
     std::size_t theta_end) {
   std::vector<std::size_t> indices;
-  for (std::size_t coarse_index = 0; coarse_index < map.coarse_cells.size(); ++coarse_index) {
-    const auto& cell = map.coarse_cells[coarse_index];
-    if (cell.radial_index == radial &&
-        cell.theta_begin == theta_begin &&
-        cell.theta_end == theta_end) {
-      indices.push_back(coarse_index);
+  if (radial >= map.fine_radial_cells ||
+      theta_begin >= theta_end ||
+      theta_end > map.fine_theta_cells) {
+    return indices;
+  }
+
+  std::size_t phi = 0u;
+  while (phi < map.fine_phi_cells) {
+    const std::size_t coarse_index = map.fine_to_coarse(radial, theta_begin, phi);
+    if (coarse_index == dec3d::mesh::InvalidMacroZoneIndex() ||
+        coarse_index >= map.coarse_cells.size()) {
+      indices.clear();
+      return indices;
     }
+    const auto& cell = map.coarse_cells[coarse_index];
+    if (cell.radial_index != radial ||
+        cell.theta_begin != theta_begin ||
+        cell.theta_end != theta_end ||
+        cell.phi_begin != phi ||
+        cell.phi_end <= phi ||
+        cell.phi_end > map.fine_phi_cells) {
+      indices.clear();
+      return indices;
+    }
+    indices.push_back(coarse_index);
+    phi = cell.phi_end;
   }
   return indices;
 }
@@ -3335,14 +3370,30 @@ struct MacroGhostBootstrap {
     const std::vector<std::size_t>& band_cells,
     const dec3d::mesh::MacroZoneMap& map,
     std::size_t fine_phi_index) noexcept {
-  for (const std::size_t coarse_index : band_cells) {
-    const auto& cell = map.coarse_cells[coarse_index];
-    if (cell.phi_begin <= fine_phi_index && fine_phi_index < cell.phi_end) {
-      return coarse_index;
-    }
+  if (band_cells.empty() || fine_phi_index >= map.fine_phi_cells) {
+    return dec3d::mesh::InvalidMacroZoneIndex();
   }
-
-  return dec3d::mesh::InvalidMacroZoneIndex();
+  const std::size_t reference_index = band_cells.front();
+  if (reference_index >= map.coarse_cells.size()) {
+    return dec3d::mesh::InvalidMacroZoneIndex();
+  }
+  const auto& reference_cell = map.coarse_cells[reference_index];
+  const std::size_t coarse_index =
+      map.fine_to_coarse(reference_cell.radial_index,
+                         reference_cell.theta_begin,
+                         fine_phi_index);
+  if (coarse_index == dec3d::mesh::InvalidMacroZoneIndex() ||
+      coarse_index >= map.coarse_cells.size()) {
+    return dec3d::mesh::InvalidMacroZoneIndex();
+  }
+  const auto& cell = map.coarse_cells[coarse_index];
+  if (cell.radial_index != reference_cell.radial_index ||
+      cell.theta_begin != reference_cell.theta_begin ||
+      cell.theta_end != reference_cell.theta_end ||
+      !(cell.phi_begin <= fine_phi_index && fine_phi_index < cell.phi_end)) {
+    return dec3d::mesh::InvalidMacroZoneIndex();
+  }
+  return coarse_index;
 }
 
 [[nodiscard]] std::size_t FindCoarseCellCoveringFineThetaPhi(
@@ -3350,18 +3401,24 @@ struct MacroGhostBootstrap {
     std::size_t radial,
     std::size_t fine_theta_index,
     std::size_t fine_phi_index) noexcept {
-  for (std::size_t coarse_index = 0; coarse_index < map.coarse_cells.size(); ++coarse_index) {
-    const auto& cell = map.coarse_cells[coarse_index];
-    if (cell.radial_index == radial &&
-        cell.theta_begin <= fine_theta_index &&
-        fine_theta_index < cell.theta_end &&
-        cell.phi_begin <= fine_phi_index &&
-        fine_phi_index < cell.phi_end) {
-      return coarse_index;
-    }
+  if (radial >= map.fine_radial_cells ||
+      fine_theta_index >= map.fine_theta_cells ||
+      fine_phi_index >= map.fine_phi_cells) {
+    return dec3d::mesh::InvalidMacroZoneIndex();
   }
-
-  return dec3d::mesh::InvalidMacroZoneIndex();
+  const std::size_t coarse_index =
+      map.fine_to_coarse(radial, fine_theta_index, fine_phi_index);
+  if (coarse_index == dec3d::mesh::InvalidMacroZoneIndex() ||
+      coarse_index >= map.coarse_cells.size()) {
+    return dec3d::mesh::InvalidMacroZoneIndex();
+  }
+  const auto& cell = map.coarse_cells[coarse_index];
+  if (cell.radial_index != radial ||
+      !(cell.theta_begin <= fine_theta_index && fine_theta_index < cell.theta_end) ||
+      !(cell.phi_begin <= fine_phi_index && fine_phi_index < cell.phi_end)) {
+    return dec3d::mesh::InvalidMacroZoneIndex();
+  }
+  return coarse_index;
 }
 
 [[nodiscard]] bool BuildMacroRadialPpmLine(
@@ -3680,9 +3737,13 @@ struct MacroGhostBootstrap {
     }
   }
 
+  auto timing_start = std::chrono::steady_clock::now();
   const auto map = dec3d::mesh::DetectMacroZones(
       geometry,
       dec3d::mesh::MacroZoningDetectionOptions{options.macro_zoning_coarse_factor});
+  if (summary != nullptr) {
+    summary->detect_wall_s += ElapsedHydroSecondsSince(timing_start);
+  }
   if (!map.is_complete()) {
     failure_reason = map.failure_reason.empty()
                          ? "macro-zoning detection failed"
@@ -3691,10 +3752,14 @@ struct MacroGhostBootstrap {
   }
 
   const auto fine_view = BuildFineHydroPackageView(hydro_view);
+  timing_start = std::chrono::steady_clock::now();
   const auto coarse_package = dec3d::mesh::RestrictFineHydroPackage(
       fine_view,
       geometry,
       map);
+  if (summary != nullptr) {
+    summary->restrict_wall_s += ElapsedHydroSecondsSince(timing_start);
+  }
   if (!coarse_package.is_complete()) {
     failure_reason = coarse_package.failure_reason.empty()
                          ? "macro-zoning restrict failed"
@@ -3702,6 +3767,7 @@ struct MacroGhostBootstrap {
     return false;
   }
 
+  const auto macro_update_start = std::chrono::steady_clock::now();
   MacroGhostBootstrap ghost_bootstrap;
   if (radial_ghost_override != nullptr &&
       radial_ghost_override->ghost_layers != 0u) {
@@ -3871,6 +3937,7 @@ struct MacroGhostBootstrap {
   if (options.apply_radial_sweep &&
       options.use_ppm_reconstruction &&
       options.macro_zoning_use_radial_ppm) {
+    const auto macro_radial_start = std::chrono::steady_clock::now();
     struct MacroRadialFluxLineDetail {
       bool valid{false};
       std::size_t theta{0};
@@ -3923,42 +3990,52 @@ struct MacroGhostBootstrap {
       std::vector<std::size_t> line_cell_indices;
       std::vector<HydroConservativeState> ghosted_line;
       std::vector<double> effective_widths;
-      std::vector<HydroConservativeState> interface_fluxes;
-      std::vector<double> moving_interface_pressure_terms;
       PpmLineReconstructionResult line_reconstruction;
       std::size_t downgraded_interface_count{0u};
     };
 
+    const bool collect_radial_flux_diagnostics =
+        summary != nullptr && options.debug_angular_stage_diagnostics;
+    const std::size_t radial_face_diagnostic_count =
+        collect_radial_flux_diagnostics ? map.fine_radial_cells + 1u : 0u;
+    const std::size_t radial_cell_diagnostic_count =
+        collect_radial_flux_diagnostics ? map.fine_radial_cells : 0u;
     std::vector<double> radial_mass_flux_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> radial_mass_flux_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
-    std::vector<double> radial_mass_flux_sum(map.fine_radial_cells + 1u, 0.0);
-    std::vector<std::size_t> radial_mass_flux_count(map.fine_radial_cells + 1u, 0u);
-    std::vector<MacroRadialFluxLineDetail> radial_mass_flux_min_detail(map.fine_radial_cells + 1u);
-    std::vector<MacroRadialFluxLineDetail> radial_mass_flux_max_detail(map.fine_radial_cells + 1u);
+    std::vector<double> radial_mass_flux_sum(radial_face_diagnostic_count, 0.0);
+    std::vector<std::size_t> radial_mass_flux_count(radial_face_diagnostic_count, 0u);
+    std::vector<MacroRadialFluxLineDetail> radial_mass_flux_min_detail(
+        radial_face_diagnostic_count);
+    std::vector<MacroRadialFluxLineDetail> radial_mass_flux_max_detail(
+        radial_face_diagnostic_count);
     std::vector<double> radial_mom_r_flux_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> radial_mom_r_flux_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
-    std::vector<double> radial_mom_r_flux_sum(map.fine_radial_cells + 1u, 0.0);
-    std::vector<std::size_t> radial_mom_r_flux_count(map.fine_radial_cells + 1u, 0u);
-    std::vector<MacroRadialFluxLineDetail> radial_mom_r_flux_min_detail(map.fine_radial_cells + 1u);
-    std::vector<MacroRadialFluxLineDetail> radial_mom_r_flux_max_detail(map.fine_radial_cells + 1u);
+    std::vector<double> radial_mom_r_flux_sum(radial_face_diagnostic_count, 0.0);
+    std::vector<std::size_t> radial_mom_r_flux_count(radial_face_diagnostic_count, 0u);
+    std::vector<MacroRadialFluxLineDetail> radial_mom_r_flux_min_detail(
+        radial_face_diagnostic_count);
+    std::vector<MacroRadialFluxLineDetail> radial_mom_r_flux_max_detail(
+        radial_face_diagnostic_count);
     std::vector<double> radial_e_total_flux_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> radial_e_total_flux_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
-    std::vector<double> radial_e_total_flux_sum(map.fine_radial_cells + 1u, 0.0);
-    std::vector<std::size_t> radial_e_total_flux_count(map.fine_radial_cells + 1u, 0u);
-    std::vector<MacroRadialFluxLineDetail> radial_e_total_flux_min_detail(map.fine_radial_cells + 1u);
-    std::vector<MacroRadialFluxLineDetail> radial_e_total_flux_max_detail(map.fine_radial_cells + 1u);
+    std::vector<double> radial_e_total_flux_sum(radial_face_diagnostic_count, 0.0);
+    std::vector<std::size_t> radial_e_total_flux_count(radial_face_diagnostic_count, 0u);
+    std::vector<MacroRadialFluxLineDetail> radial_e_total_flux_min_detail(
+        radial_face_diagnostic_count);
+    std::vector<MacroRadialFluxLineDetail> radial_e_total_flux_max_detail(
+        radial_face_diagnostic_count);
     const auto record_radial_flux_spread =
         [](std::size_t radial_face,
            double flux,
@@ -3979,104 +4056,104 @@ struct MacroGhostBootstrap {
           }
           sum_flux[radial_face] += flux;
           count_flux[radial_face] += 1u;
-        };
+    };
     std::vector<MacroRadialFluxLineDetail> debug_face_smoothness_details;
     std::vector<MacroRadialPpmLineWork> radial_ppm_lines;
     radial_ppm_lines.reserve(map.fine_theta_cells * map.fine_phi_cells);
     std::vector<bool> shell_fallback_mask(map.fine_radial_cells + 1u, false);
     std::vector<double> radial_input_rho_min(
-        map.fine_radial_cells,
+        radial_cell_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> radial_input_rho_max(
-        map.fine_radial_cells,
+        radial_cell_diagnostic_count,
         -std::numeric_limits<double>::infinity());
     std::vector<double> radial_input_vn_min(
-        map.fine_radial_cells,
+        radial_cell_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> radial_input_vn_max(
-        map.fine_radial_cells,
+        radial_cell_diagnostic_count,
         -std::numeric_limits<double>::infinity());
     std::vector<double> radial_input_pressure_min(
-        map.fine_radial_cells,
+        radial_cell_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> radial_input_pressure_max(
-        map.fine_radial_cells,
+        radial_cell_diagnostic_count,
         -std::numeric_limits<double>::infinity());
-    std::vector<std::size_t> radial_input_count(map.fine_radial_cells, 0u);
+    std::vector<std::size_t> radial_input_count(radial_cell_diagnostic_count, 0u);
     std::vector<double> traced_left_rho_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> traced_left_rho_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
     std::vector<double> traced_right_rho_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> traced_right_rho_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
     std::vector<double> traced_left_vn_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> traced_left_vn_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
     std::vector<double> traced_right_vn_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> traced_right_vn_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
     std::vector<double> edge_left_rho_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> edge_left_rho_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
     std::vector<double> edge_right_rho_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> edge_right_rho_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
     std::vector<double> edge_left_vn_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> edge_left_vn_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
     std::vector<double> edge_right_vn_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> edge_right_vn_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
     std::vector<double> edge_left_pressure_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> edge_left_pressure_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
     std::vector<double> edge_right_pressure_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> edge_right_pressure_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
-    std::vector<std::size_t> edge_interface_count(map.fine_radial_cells + 1u, 0u);
+    std::vector<std::size_t> edge_interface_count(radial_face_diagnostic_count, 0u);
     std::vector<double> traced_left_pressure_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> traced_left_pressure_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
     std::vector<double> traced_right_pressure_min(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         std::numeric_limits<double>::infinity());
     std::vector<double> traced_right_pressure_max(
-        map.fine_radial_cells + 1u,
+        radial_face_diagnostic_count,
         -std::numeric_limits<double>::infinity());
-    std::vector<std::size_t> traced_interface_count(map.fine_radial_cells + 1u, 0u);
+    std::vector<std::size_t> traced_interface_count(radial_face_diagnostic_count, 0u);
     const auto append_primitive_spread_report =
         [&](std::string_view stage,
             std::string_view representation,
@@ -4172,7 +4249,7 @@ struct MacroGhostBootstrap {
           return false;
         }
 
-        if (options.debug_angular_stage_diagnostics) {
+        if (collect_radial_flux_diagnostics) {
           for (std::size_t radial = 0; radial < map.fine_radial_cells; ++radial) {
             const auto primitive = ToDirectionalPrimitive(
                 line_work.ghosted_line[ppm_ghost_layers + radial],
@@ -4216,13 +4293,17 @@ struct MacroGhostBootstrap {
       }
     }
 
+    std::vector<HydroConservativeState> radial_interface_fluxes(
+        map.fine_radial_cells + 1u,
+        HydroConservativeState{});
+    std::vector<double> radial_moving_interface_pressure_terms(
+        macro_ale_direct_hllc_mode ? map.fine_radial_cells + 1u : 0u,
+        std::numeric_limits<double>::quiet_NaN());
     for (auto& line_work : radial_ppm_lines) {
-      line_work.interface_fluxes.assign(
-          map.fine_radial_cells + 1u,
-          HydroConservativeState{});
       if (macro_ale_direct_hllc_mode) {
-        line_work.moving_interface_pressure_terms.assign(
-            map.fine_radial_cells + 1u,
+        std::fill(
+            radial_moving_interface_pressure_terms.begin(),
+            radial_moving_interface_pressure_terms.end(),
             std::numeric_limits<double>::quiet_NaN());
       }
       if (!BuildPpmInterfaceFluxesFromReconstruction(
@@ -4231,7 +4312,7 @@ struct MacroGhostBootstrap {
               SweepDirection::radial,
               ppm_ghost_layers,
               shell_fallback_mask,
-              line_work.interface_fluxes,
+              radial_interface_fluxes,
               line_work.downgraded_interface_count,
               failure_reason,
               macro_ale_direct_hllc_mode
@@ -4242,16 +4323,16 @@ struct MacroGhostBootstrap {
                   ? macro_ale_hllc_diagnostics
                   : nullptr,
               macro_ale_direct_hllc_mode
-                  ? &line_work.moving_interface_pressure_terms
+                  ? &radial_moving_interface_pressure_terms
                   : nullptr)) {
         return false;
       }
 
       for (std::size_t radial_face = 0; radial_face <= map.fine_radial_cells; ++radial_face) {
-        const double mass_flux = line_work.interface_fluxes[radial_face].rho;
-        const double mom_r_flux = line_work.interface_fluxes[radial_face].mom_r;
+        const double mass_flux = radial_interface_fluxes[radial_face].rho;
+        const double mom_r_flux = radial_interface_fluxes[radial_face].mom_r;
         const double e_total_flux =
-            line_work.interface_fluxes[radial_face].e_fluid_total;
+            radial_interface_fluxes[radial_face].e_fluid_total;
         if (macro_ale_direct_hllc_mode) {
           const double angular_face_area =
               RadialFaceAreaPerSolidAngle(geometry, radial_face) *
@@ -4266,12 +4347,12 @@ struct MacroGhostBootstrap {
           macro_ale_hllc_local_face_window->face_fluxes[radial_face] =
               Add(
                   macro_ale_hllc_local_face_window->face_fluxes[radial_face],
-                  Scale(line_work.interface_fluxes[radial_face], angular_face_area));
+                  Scale(radial_interface_fluxes[radial_face], angular_face_area));
         }
-        MacroRadialFluxLineDetail detail;
-        if (options.debug_angular_stage_diagnostics &&
-            line_work.line_reconstruction.success &&
-            radial_face < line_work.line_reconstruction.interfaces.size()) {
+        if (collect_radial_flux_diagnostics) {
+          MacroRadialFluxLineDetail detail;
+          if (line_work.line_reconstruction.success &&
+              radial_face < line_work.line_reconstruction.interfaces.size()) {
           const auto& interface_state =
               line_work.line_reconstruction.interfaces[radial_face];
           const std::size_t left_line_cell = ppm_ghost_layers + radial_face - 1u;
@@ -4445,42 +4526,42 @@ struct MacroGhostBootstrap {
           if (radial_face < line_work.line_cell_indices.size()) {
             detail.right_coarse_index = line_work.line_cell_indices[radial_face];
           }
-        }
-        record_radial_flux_spread(
-            radial_face,
-            mass_flux,
-            detail,
-            radial_mass_flux_min,
-            radial_mass_flux_max,
-            radial_mass_flux_sum,
-            radial_mass_flux_count,
-            radial_mass_flux_min_detail,
-            radial_mass_flux_max_detail);
-        record_radial_flux_spread(
-            radial_face,
-            mom_r_flux,
-            detail,
-            radial_mom_r_flux_min,
-            radial_mom_r_flux_max,
-            radial_mom_r_flux_sum,
-            radial_mom_r_flux_count,
-            radial_mom_r_flux_min_detail,
-            radial_mom_r_flux_max_detail);
-        record_radial_flux_spread(
-            radial_face,
-            e_total_flux,
-            detail,
-            radial_e_total_flux_min,
-            radial_e_total_flux_max,
-            radial_e_total_flux_sum,
-            radial_e_total_flux_count,
-            radial_e_total_flux_min_detail,
-            radial_e_total_flux_max_detail);
-        if (options.debug_angular_stage_diagnostics &&
-            options.debug_macro_radial_ppm_face_smoothness &&
-            radial_face == options.debug_macro_radial_ppm_face &&
-            detail.valid) {
-          debug_face_smoothness_details.push_back(detail);
+          }
+          record_radial_flux_spread(
+              radial_face,
+              mass_flux,
+              detail,
+              radial_mass_flux_min,
+              radial_mass_flux_max,
+              radial_mass_flux_sum,
+              radial_mass_flux_count,
+              radial_mass_flux_min_detail,
+              radial_mass_flux_max_detail);
+          record_radial_flux_spread(
+              radial_face,
+              mom_r_flux,
+              detail,
+              radial_mom_r_flux_min,
+              radial_mom_r_flux_max,
+              radial_mom_r_flux_sum,
+              radial_mom_r_flux_count,
+              radial_mom_r_flux_min_detail,
+              radial_mom_r_flux_max_detail);
+          record_radial_flux_spread(
+              radial_face,
+              e_total_flux,
+              detail,
+              radial_e_total_flux_min,
+              radial_e_total_flux_max,
+              radial_e_total_flux_sum,
+              radial_e_total_flux_count,
+              radial_e_total_flux_min_detail,
+              radial_e_total_flux_max_detail);
+          if (options.debug_macro_radial_ppm_face_smoothness &&
+              radial_face == options.debug_macro_radial_ppm_face &&
+              detail.valid) {
+            debug_face_smoothness_details.push_back(detail);
+          }
         }
       }
 
@@ -4495,10 +4576,10 @@ struct MacroGhostBootstrap {
       for (std::size_t radial = 0; radial < map.fine_radial_cells; ++radial) {
         const std::size_t coarse_index = line_work.line_cell_indices[radial];
         auto face_minus_per_solid_angle = Scale(
-            line_work.interface_fluxes[radial],
+            radial_interface_fluxes[radial],
             RadialFaceAreaPerSolidAngle(geometry, radial));
         auto face_plus_per_solid_angle = Scale(
-            line_work.interface_fluxes[radial + 1u],
+            radial_interface_fluxes[radial + 1u],
             RadialFaceAreaPerSolidAngle(geometry, radial + 1u));
         if (macro_ale_direct_hllc_mode && options.apply_geometric_source) {
           const auto primitive = RecoverPrimitiveState(coarse_states[coarse_index]);
@@ -4509,8 +4590,8 @@ struct MacroGhostBootstrap {
                 MacroAleHllcFailureClass::extensive_budget_residual_exceeded;
             return false;
           }
-          if (line_work.moving_interface_pressure_terms.size() !=
-              line_work.interface_fluxes.size()) {
+          if (radial_moving_interface_pressure_terms.size() !=
+              radial_interface_fluxes.size()) {
             failure_reason =
                 "direct moving-face HLLC pressure-balanced radial flux is missing interface pressure terms";
             macro_ale_hllc_diagnostics->failure_class =
@@ -4523,8 +4604,8 @@ struct MacroGhostBootstrap {
           const double pressure_balance =
               cell_has_moving_radial_face
                   ? FaceConsistentPressureBalance(
-                        line_work.moving_interface_pressure_terms[radial],
-                        line_work.moving_interface_pressure_terms[radial + 1u])
+                        radial_moving_interface_pressure_terms[radial],
+                        radial_moving_interface_pressure_terms[radial + 1u])
                   : primitive.pressure;
           if (!(pressure_balance > 0.0) || !std::isfinite(pressure_balance)) {
             failure_reason =
@@ -4570,7 +4651,7 @@ struct MacroGhostBootstrap {
       }
     }
 
-    if (summary != nullptr && options.debug_angular_stage_diagnostics) {
+    if (collect_radial_flux_diagnostics) {
       append_primitive_spread_report(
           "a4_radial_ppm_input_cell_center",
           "macro_radial_line_cell_centers",
@@ -4922,6 +5003,9 @@ struct MacroGhostBootstrap {
         summary->angular_stage_report_lines.push_back(smoothness_report.str());
       }
     }
+    if (summary != nullptr) {
+      summary->radial_update_wall_s += ElapsedHydroSecondsSince(macro_radial_start);
+    }
   }
 
   if (summary != nullptr && options.debug_angular_stage_diagnostics) {
@@ -4946,13 +5030,16 @@ struct MacroGhostBootstrap {
     }
   }
 
-  for (std::size_t radial = 0; radial < map.fine_radial_cells; ++radial) {
-    std::vector<dec3d::mesh::MacroZoneThetaBand> radial_bands;
-    for (const auto& band : map.theta_bands) {
-      if (band.radial_index == radial) {
-        radial_bands.push_back(band);
-      }
+  std::vector<std::vector<dec3d::mesh::MacroZoneThetaBand>> theta_bands_by_radial(
+      map.fine_radial_cells);
+  for (const auto& band : map.theta_bands) {
+    if (band.radial_index < theta_bands_by_radial.size()) {
+      theta_bands_by_radial[band.radial_index].push_back(band);
     }
+  }
+
+  for (std::size_t radial = 0; radial < map.fine_radial_cells; ++radial) {
+    const auto& radial_bands = theta_bands_by_radial[radial];
     std::vector<std::vector<std::size_t>> radial_band_cells;
     radial_band_cells.reserve(radial_bands.size());
     for (const auto& band : radial_bands) {
@@ -4964,6 +5051,10 @@ struct MacroGhostBootstrap {
     }
 
     if (options.apply_phi_sweep) {
+      const auto macro_phi_start = std::chrono::steady_clock::now();
+      std::vector<HydroConservativeState> phi_ghosted_line;
+      std::vector<double> phi_effective_widths;
+      std::vector<HydroConservativeState> phi_interface_fluxes;
       for (std::size_t band_index = 0; band_index < radial_bands.size(); ++band_index) {
         const auto& band = radial_bands[band_index];
         const auto& band_cells = radial_band_cells[band_index];
@@ -4977,11 +5068,9 @@ struct MacroGhostBootstrap {
             radial,
             band.theta_begin,
             band.theta_end);
-        std::vector<HydroConservativeState> interface_fluxes(band_cells.size() + 1u);
+        phi_interface_fluxes.resize(band_cells.size() + 1u);
         if (options.use_ppm_reconstruction &&
             options.macro_zoning_use_phi_ppm) {
-          std::vector<HydroConservativeState> ghosted_line;
-          std::vector<double> effective_widths;
           std::size_t downgraded_interface_count = 0u;
           if (!BuildMacroPhiPpmLine(
                   band_cells,
@@ -4989,20 +5078,20 @@ struct MacroGhostBootstrap {
                   coarse_states,
                   geometry,
                   ppm_ghost_layers,
-                  ghosted_line,
-                  effective_widths,
+                  phi_ghosted_line,
+                  phi_effective_widths,
                   failure_reason)) {
             return false;
           }
 
           if (!BuildPpmInterfaceFluxes(
-                  ghosted_line,
+                  phi_ghosted_line,
                   SweepDirection::phi,
                   band_cells.size(),
                   ppm_ghost_layers,
                   dt_s,
-                  effective_widths,
-                  interface_fluxes,
+                  phi_effective_widths,
+                  phi_interface_fluxes,
                   downgraded_interface_count,
                   failure_reason)) {
             return false;
@@ -5017,25 +5106,28 @@ struct MacroGhostBootstrap {
           for (std::size_t local = 0; local < band_cells.size(); ++local) {
             const std::size_t left_index = band_cells[local];
             const std::size_t right_index = band_cells[(local + 1u) % band_cells.size()];
-            interface_fluxes[local + 1u] = ComputeDirectionalInterfaceFlux(
+            phi_interface_fluxes[local + 1u] = ComputeDirectionalInterfaceFlux(
                 coarse_states[left_index],
                 coarse_states[right_index],
                 SweepDirection::phi);
-            if (!interface_fluxes[local + 1u].is_finite()) {
+            if (!phi_interface_fluxes[local + 1u].is_finite()) {
               failure_reason = "macro-zoning phi coarse interface flux is non-finite";
               return false;
             }
           }
-          interface_fluxes[0] = interface_fluxes.back();
+          phi_interface_fluxes[0] = phi_interface_fluxes.back();
         }
 
         for (std::size_t local = 0; local < band_cells.size(); ++local) {
           const std::size_t coarse_index = band_cells[local];
-          const auto face_minus = Scale(interface_fluxes[local], dt_s * face_area);
-          const auto face_plus = Scale(interface_fluxes[local + 1u], dt_s * face_area);
+          const auto face_minus = Scale(phi_interface_fluxes[local], dt_s * face_area);
+          const auto face_plus = Scale(phi_interface_fluxes[local + 1u], dt_s * face_area);
           coarse_extensive_delta[coarse_index] =
               Add(coarse_extensive_delta[coarse_index], Subtract(face_minus, face_plus));
         }
+      }
+      if (summary != nullptr) {
+        summary->phi_update_wall_s += ElapsedHydroSecondsSince(macro_phi_start);
       }
     }
 
@@ -5062,14 +5154,16 @@ struct MacroGhostBootstrap {
     }
 
     if (options.apply_theta_sweep && radial_bands.size() > 1u) {
+      const auto macro_theta_start = std::chrono::steady_clock::now();
       if (options.use_ppm_reconstruction &&
           options.macro_zoning_use_theta_ppm &&
           radial_bands.size() >= ppm_ghost_layers) {
+        std::vector<std::size_t> theta_line_cell_indices;
+        std::vector<HydroConservativeState> theta_ghosted_line;
+        std::vector<double> theta_effective_widths;
+        std::vector<HydroConservativeState> theta_interface_fluxes;
         for (std::size_t fine_phi = 0; fine_phi < map.fine_phi_cells; ++fine_phi) {
-          std::vector<std::size_t> line_cell_indices;
-          std::vector<HydroConservativeState> ghosted_line;
-          std::vector<double> effective_widths;
-          std::vector<HydroConservativeState> interface_fluxes(radial_bands.size() + 1u);
+          theta_interface_fluxes.resize(radial_bands.size() + 1u);
           std::size_t downgraded_interface_count = 0u;
           if (!BuildMacroThetaPpmLine(
                   radial_bands,
@@ -5079,21 +5173,21 @@ struct MacroGhostBootstrap {
                   geometry,
                   fine_phi,
                   ppm_ghost_layers,
-                  line_cell_indices,
-                  ghosted_line,
-                  effective_widths,
+                  theta_line_cell_indices,
+                  theta_ghosted_line,
+                  theta_effective_widths,
                   failure_reason)) {
             return false;
           }
 
           if (!BuildPpmInterfaceFluxes(
-                  ghosted_line,
+                  theta_ghosted_line,
                   SweepDirection::theta,
                   radial_bands.size(),
                   ppm_ghost_layers,
                   dt_s,
-                  effective_widths,
-                  interface_fluxes,
+                  theta_effective_widths,
+                  theta_interface_fluxes,
                   downgraded_interface_count,
                   failure_reason)) {
             return false;
@@ -5112,13 +5206,13 @@ struct MacroGhostBootstrap {
                 radial_bands[band_index].theta_end,
                 fine_phi,
                 fine_phi + 1u);
-            auto lower_flux = interface_fluxes[band_index + 1u];
-            auto upper_flux = interface_fluxes[band_index + 1u];
+            auto lower_flux = theta_interface_fluxes[band_index + 1u];
+            auto upper_flux = theta_interface_fluxes[band_index + 1u];
             if (macro_ale_direct_hllc_mode && options.apply_geometric_source) {
               const auto lower_primitive =
-                  RecoverPrimitiveState(coarse_states[line_cell_indices[band_index]]);
+                  RecoverPrimitiveState(coarse_states[theta_line_cell_indices[band_index]]);
               const auto upper_primitive =
-                  RecoverPrimitiveState(coarse_states[line_cell_indices[band_index + 1u]]);
+                  RecoverPrimitiveState(coarse_states[theta_line_cell_indices[band_index + 1u]]);
               if (!lower_primitive.is_physical() || !upper_primitive.is_physical()) {
                 failure_reason =
                     "direct moving-face HLLC pressure-balanced theta flux encountered non-physical coarse state";
@@ -5131,10 +5225,10 @@ struct MacroGhostBootstrap {
             }
             const auto lower_extensive_flux = Scale(lower_flux, dt_s * face_area);
             const auto upper_extensive_flux = Scale(upper_flux, dt_s * face_area);
-            coarse_extensive_delta[line_cell_indices[band_index]] =
-                Subtract(coarse_extensive_delta[line_cell_indices[band_index]], lower_extensive_flux);
-            coarse_extensive_delta[line_cell_indices[band_index + 1u]] =
-                Add(coarse_extensive_delta[line_cell_indices[band_index + 1u]], upper_extensive_flux);
+            coarse_extensive_delta[theta_line_cell_indices[band_index]] =
+                Subtract(coarse_extensive_delta[theta_line_cell_indices[band_index]], lower_extensive_flux);
+            coarse_extensive_delta[theta_line_cell_indices[band_index + 1u]] =
+                Add(coarse_extensive_delta[theta_line_cell_indices[band_index + 1u]], upper_extensive_flux);
           }
         }
       } else {
@@ -5204,6 +5298,9 @@ struct MacroGhostBootstrap {
             }
           }
         }
+      }
+      if (summary != nullptr) {
+        summary->theta_update_wall_s += ElapsedHydroSecondsSince(macro_theta_start);
       }
     }
 
@@ -5285,6 +5382,7 @@ struct MacroGhostBootstrap {
         debug_source_extensive_delta));
   }
 
+  const auto macro_state_update_start = std::chrono::steady_clock::now();
   auto updated_states = coarse_states;
   for (std::size_t coarse_index = 0; coarse_index < updated_states.size(); ++coarse_index) {
     if (macro_ale_direct_hllc_mode) {
@@ -5315,6 +5413,9 @@ struct MacroGhostBootstrap {
       return false;
     }
   }
+  if (summary != nullptr) {
+    summary->state_update_wall_s += ElapsedHydroSecondsSince(macro_state_update_start);
+  }
 
   if (summary != nullptr && options.debug_angular_stage_diagnostics) {
     summary->angular_stage_report_lines.push_back(FormatAngularStageMetrics(
@@ -5331,6 +5432,11 @@ struct MacroGhostBootstrap {
   }
 
   StoreMacroZoneStates(updated_states, updated_coarse);
+  if (summary != nullptr) {
+    summary->update_wall_s += ElapsedHydroSecondsSince(macro_update_start);
+  }
+
+  const auto prolong_start = std::chrono::steady_clock::now();
   const auto prolonged = dec3d::mesh::ProlongMacroZoneHydroPackage(updated_coarse);
   if (!prolonged.is_complete()) {
     failure_reason = prolonged.failure_reason.empty()
@@ -5356,6 +5462,9 @@ struct MacroGhostBootstrap {
             Add(accumulated_delta[index], Subtract(prolonged_state, snapshot.cells[index]));
       }
     }
+  }
+  if (summary != nullptr) {
+    summary->prolong_wall_s += ElapsedHydroSecondsSince(prolong_start);
   }
 
   if (summary != nullptr && options.debug_angular_stage_diagnostics) {
@@ -6356,7 +6465,9 @@ StaticGridHydroResult AdvanceStaticGridHydro(
     result.failure_reason =
         "alpha hydro terms require alpha_chi in the hydro scalar bundle";
   } else {
+    auto timing_start = std::chrono::steady_clock::now();
     const auto hydrodynamic_snapshot = CaptureSnapshot(hydro_view);
+    result.timing_snapshot_wall_s += ElapsedHydroSecondsSince(timing_start);
     const bool macro_ale_requested =
         options.use_macro_zoning && options.apply_radial_ale_flux_correction;
     const bool macro_ale_direct_hllc_mode =
@@ -6376,6 +6487,7 @@ StaticGridHydroResult AdvanceStaticGridHydro(
         options.apply_radial_sweep &&
         options.macro_zoning_use_radial_ppm;
     bool macro_ale_whole_domain_valid = false;
+    timing_start = std::chrono::steady_clock::now();
     std::vector<HydroConservativeState> accumulated_delta(
         hydrodynamic_snapshot.cells.size(),
         HydroConservativeState{});
@@ -6388,15 +6500,18 @@ StaticGridHydroResult AdvanceStaticGridHydro(
     std::vector<HydroConservativeState> source_delta(
         hydrodynamic_snapshot.cells.size(),
         HydroConservativeState{});
-    const auto geometric_source_snapshot =
-        options.apply_geometric_source ? CaptureGeometricSourceSnapshot(hydro_view)
-                                       : GeometricSourceSnapshot{};
     dec3d::mesh::SphericalGeometryMetadata ale_updated_geometry = geometry;
     std::vector<HydroConservativeState> macro_ale_extensive_delta(
         hydrodynamic_snapshot.cells.size(),
         HydroConservativeState{});
     dec3d::state::HydroStateView* update_view = &hydro_view;
     dec3d::state::HydroStateView staged_work_view;
+    result.timing_scratch_wall_s += ElapsedHydroSecondsSince(timing_start);
+    timing_start = std::chrono::steady_clock::now();
+    const auto geometric_source_snapshot =
+        options.apply_geometric_source ? CaptureGeometricSourceSnapshot(hydro_view)
+                                       : GeometricSourceSnapshot{};
+    result.timing_snapshot_wall_s += ElapsedHydroSecondsSince(timing_start);
 
     if (defer_macro_ale_writeback) {
       staged_work_view = BuildOwnedHydroWorkViewFromSnapshot(hydrodynamic_snapshot);
@@ -6472,7 +6587,8 @@ StaticGridHydroResult AdvanceStaticGridHydro(
       std::string ghost_report_line;
       DirectionalPpmSummary ppm_summary;
       RadialAleFluxSummary radial_ale_summary;
-      if (!AccumulateDirectionalSweepDelta(
+      const auto sweep_start = std::chrono::steady_clock::now();
+      const bool sweep_ok = AccumulateDirectionalSweepDelta(
               SweepDirection::radial,
               hydrodynamic_snapshot,
               geometry,
@@ -6487,7 +6603,9 @@ StaticGridHydroResult AdvanceStaticGridHydro(
               radial_ale_proposal,
               &radial_ale_summary,
               use_ale_extensive_update ? &radial_delta_per_solid_angle : nullptr,
-              use_ale_extensive_update ? &radial_delta_extensive : nullptr)) {
+              use_ale_extensive_update ? &radial_delta_extensive : nullptr);
+      result.timing_radial_sweep_wall_s += ElapsedHydroSecondsSince(sweep_start);
+      if (!sweep_ok) {
         if (result.failure_reason.empty()) {
           result.failure_reason = "radial static-grid hydro sweep failed";
         }
@@ -6570,6 +6688,14 @@ StaticGridHydroResult AdvanceStaticGridHydro(
           result.failure_reason = "macro-zoned coarse hydro update failed";
         }
       } else {
+        result.timing_macro_detect_wall_s += macro_summary.detect_wall_s;
+        result.timing_macro_restrict_wall_s += macro_summary.restrict_wall_s;
+        result.timing_macro_update_wall_s += macro_summary.update_wall_s;
+        result.timing_macro_radial_update_wall_s += macro_summary.radial_update_wall_s;
+        result.timing_macro_theta_update_wall_s += macro_summary.theta_update_wall_s;
+        result.timing_macro_phi_update_wall_s += macro_summary.phi_update_wall_s;
+        result.timing_macro_state_update_wall_s += macro_summary.state_update_wall_s;
+        result.timing_macro_prolong_wall_s += macro_summary.prolong_wall_s;
         AppendDiagnostic(
             result.diagnostics,
             "p1.hydro.macro_zoning.detected",
@@ -6677,7 +6803,8 @@ StaticGridHydroResult AdvanceStaticGridHydro(
     if (result.failure_reason.empty() && !options.use_macro_zoning && options.apply_theta_sweep) {
       std::string ghost_report_line;
       DirectionalPpmSummary ppm_summary;
-      if (!AccumulateDirectionalSweepDelta(
+      const auto sweep_start = std::chrono::steady_clock::now();
+      const bool sweep_ok = AccumulateDirectionalSweepDelta(
               SweepDirection::theta,
               hydrodynamic_snapshot,
               geometry,
@@ -6688,7 +6815,9 @@ StaticGridHydroResult AdvanceStaticGridHydro(
               result.failure_reason,
               nullptr,
               &ghost_report_line,
-              &ppm_summary)) {
+              &ppm_summary);
+      result.timing_theta_sweep_wall_s += ElapsedHydroSecondsSince(sweep_start);
+      if (!sweep_ok) {
         if (result.failure_reason.empty()) {
           result.failure_reason = "theta static-grid hydro sweep failed";
         }
@@ -6735,7 +6864,8 @@ StaticGridHydroResult AdvanceStaticGridHydro(
     if (result.failure_reason.empty() && !options.use_macro_zoning && options.apply_phi_sweep) {
       std::string ghost_report_line;
       DirectionalPpmSummary ppm_summary;
-      if (!AccumulateDirectionalSweepDelta(
+      const auto sweep_start = std::chrono::steady_clock::now();
+      const bool sweep_ok = AccumulateDirectionalSweepDelta(
               SweepDirection::phi,
               hydrodynamic_snapshot,
               geometry,
@@ -6746,7 +6876,9 @@ StaticGridHydroResult AdvanceStaticGridHydro(
               result.failure_reason,
               nullptr,
               &ghost_report_line,
-              &ppm_summary)) {
+              &ppm_summary);
+      result.timing_phi_sweep_wall_s += ElapsedHydroSecondsSince(sweep_start);
+      if (!sweep_ok) {
         if (result.failure_reason.empty()) {
           result.failure_reason = "phi static-grid hydro sweep failed";
         }
@@ -6792,22 +6924,27 @@ StaticGridHydroResult AdvanceStaticGridHydro(
 
     if (result.failure_reason.empty()) {
       if (use_ale_extensive_update) {
-        if (options.apply_geometric_source &&
-            !AccumulateAleSourceExtensiveDelta(
-                geometric_source_snapshot,
-                geometry,
-                dt_s,
-                source_delta,
-                result.diagnostics,
-                result.failure_reason)) {
-          if (result.failure_reason.empty()) {
-            result.failure_reason = "ALE geometric source accumulation failed";
+        if (options.apply_geometric_source) {
+          const auto source_start = std::chrono::steady_clock::now();
+          const bool source_ok = AccumulateAleSourceExtensiveDelta(
+              geometric_source_snapshot,
+              geometry,
+              dt_s,
+              source_delta,
+              result.diagnostics,
+              result.failure_reason);
+          result.timing_source_wall_s += ElapsedHydroSecondsSince(source_start);
+          if (!source_ok) {
+            if (result.failure_reason.empty()) {
+              result.failure_reason = "ALE geometric source accumulation failed";
+            }
+          } else {
+            result.geometric_source_executed = true;
           }
-        } else if (options.apply_geometric_source) {
-          result.geometric_source_executed = true;
         }
 
         if (result.failure_reason.empty()) {
+          const auto commit_start = std::chrono::steady_clock::now();
           for (std::size_t radial = 0; radial < hydrodynamic_snapshot.shape.radial_cells; ++radial) {
             for (std::size_t theta = 0; theta < hydrodynamic_snapshot.shape.theta_cells; ++theta) {
               for (std::size_t phi = 0; phi < hydrodynamic_snapshot.shape.phi_cells; ++phi) {
@@ -6838,6 +6975,7 @@ StaticGridHydroResult AdvanceStaticGridHydro(
               break;
             }
           }
+          result.timing_commit_wall_s += ElapsedHydroSecondsSince(commit_start);
         }
         if (result.failure_reason.empty() && options.debug_angular_stage_diagnostics) {
           AppendAleCommitDensityBalanceDiagnostic(
@@ -6857,6 +6995,7 @@ StaticGridHydroResult AdvanceStaticGridHydro(
               ale_updated_geometry);
         }
       } else {
+        const auto commit_start = std::chrono::steady_clock::now();
         for (std::size_t radial = 0; radial < hydrodynamic_snapshot.shape.radial_cells; ++radial) {
           for (std::size_t theta = 0; theta < hydrodynamic_snapshot.shape.theta_cells; ++theta) {
             for (std::size_t phi = 0; phi < hydrodynamic_snapshot.shape.phi_cells; ++phi) {
@@ -6877,6 +7016,7 @@ StaticGridHydroResult AdvanceStaticGridHydro(
             break;
           }
         }
+        result.timing_commit_wall_s += ElapsedHydroSecondsSince(commit_start);
         if (result.failure_reason.empty() && options.debug_angular_stage_diagnostics) {
           AppendFineAngularStageDiagnosticFromView(
               result.diagnostics,
@@ -6891,6 +7031,7 @@ StaticGridHydroResult AdvanceStaticGridHydro(
           const bool use_macro_zoned_geometric_source =
               options.use_macro_zoning &&
               (options.apply_theta_sweep || options.apply_phi_sweep);
+          const auto source_start = std::chrono::steady_clock::now();
           const auto source_step =
               use_macro_zoned_geometric_source
                   ? ApplyMacroZonedGeometricSourceStep(
@@ -6904,6 +7045,7 @@ StaticGridHydroResult AdvanceStaticGridHydro(
                         geometric_source_snapshot,
                         geometry,
                         dt_s);
+          result.timing_source_wall_s += ElapsedHydroSecondsSince(source_start);
           result.diagnostics.entries.insert(
               result.diagnostics.entries.end(),
               source_step.diagnostics.entries.begin(),
@@ -7030,6 +7172,7 @@ StaticGridHydroResult AdvanceStaticGridHydro(
     }
 
     if (result.failure_reason.empty()) {
+      const auto budget_start = std::chrono::steady_clock::now();
       if (use_ale_extensive_update) {
         result.budget = BuildAleBudgetResidualSummary(
             hydrodynamic_snapshot,
@@ -7136,9 +7279,11 @@ StaticGridHydroResult AdvanceStaticGridHydro(
           result.macro_ale_hllc_executed = true;
         }
       }
+      result.timing_budget_wall_s += ElapsedHydroSecondsSince(budget_start);
     }
   }
 
+  const auto diagnostics_start = std::chrono::steady_clock::now();
   result.success = result.failure_reason.empty();
   if (result.success) {
     AppendDiagnostic(
@@ -7183,9 +7328,11 @@ StaticGridHydroResult AdvanceStaticGridHydro(
         "p1.hydro.static_grid.failed",
         result.failure_reason.empty() ? "static-grid hydro failed" : result.failure_reason);
   }
+  result.timing_diagnostics_wall_s += ElapsedHydroSecondsSince(diagnostics_start);
 
   std::ostringstream report;
-  report << "static_grid_hydro_success=" << (result.success ? "true" : "false")
+  report << std::setprecision(17)
+         << "static_grid_hydro_success=" << (result.success ? "true" : "false")
          << "; source=" << (result.geometric_source_executed ? "true" : "false")
          << "; radial=" << (result.radial_executed ? "true" : "false")
          << "; theta=" << (result.theta_executed ? "true" : "false")
@@ -7195,7 +7342,28 @@ StaticGridHydroResult AdvanceStaticGridHydro(
          << "; advected_radiation_scalar=P_g_power_3_over_4"
          << "; passive_Ug_advection=false"
          << "; alpha_hydro_terms_enabled="
-         << (options.enable_alpha_hydro_terms ? "true" : "false");
+         << (options.enable_alpha_hydro_terms ? "true" : "false")
+         << "; h_hydro_snapshot_wall_s=" << result.timing_snapshot_wall_s
+         << "; h_hydro_scratch_wall_s=" << result.timing_scratch_wall_s
+         << "; h_hydro_radial_sweep_wall_s=" << result.timing_radial_sweep_wall_s
+         << "; h_hydro_macro_detect_wall_s=" << result.timing_macro_detect_wall_s
+         << "; h_hydro_macro_restrict_wall_s=" << result.timing_macro_restrict_wall_s
+         << "; h_hydro_macro_update_wall_s=" << result.timing_macro_update_wall_s
+         << "; h_hydro_macro_radial_update_wall_s="
+         << result.timing_macro_radial_update_wall_s
+         << "; h_hydro_macro_theta_update_wall_s="
+         << result.timing_macro_theta_update_wall_s
+         << "; h_hydro_macro_phi_update_wall_s="
+         << result.timing_macro_phi_update_wall_s
+         << "; h_hydro_macro_state_update_wall_s="
+         << result.timing_macro_state_update_wall_s
+         << "; h_hydro_macro_prolong_wall_s=" << result.timing_macro_prolong_wall_s
+         << "; h_hydro_theta_sweep_wall_s=" << result.timing_theta_sweep_wall_s
+         << "; h_hydro_phi_sweep_wall_s=" << result.timing_phi_sweep_wall_s
+         << "; h_hydro_commit_wall_s=" << result.timing_commit_wall_s
+         << "; h_hydro_source_wall_s=" << result.timing_source_wall_s
+         << "; h_hydro_budget_wall_s=" << result.timing_budget_wall_s
+         << "; h_hydro_diagnostics_wall_s=" << result.timing_diagnostics_wall_s;
   if (options.enable_alpha_hydro_terms) {
     report << "; advected_alpha_scalar=P_alpha_power_3_over_5"
            << "; passive_epsilon_alpha_advection=false"
@@ -7205,6 +7373,10 @@ StaticGridHydroResult AdvanceStaticGridHydro(
     report << "; failure_reason=" << result.failure_reason;
   }
   result.report_line = report.str();
+  AppendDiagnostic(
+      result.diagnostics,
+      "p1.hydro.static_grid.timing",
+      result.report_line);
 
   return result;
 }

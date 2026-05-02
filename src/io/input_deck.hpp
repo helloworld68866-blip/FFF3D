@@ -11,6 +11,7 @@ struct RuntimeArgumentResult {
   bool success{false};
   std::filesystem::path input_deck_path;
   std::filesystem::path profile_path;
+  std::filesystem::path restart_path;
   std::string report_line;
   std::string failure_reason;
   std::string failure_diagnostics;
@@ -21,6 +22,7 @@ struct RunConfig {
   std::string phase;
   std::vector<char> stage_order;
   int step_count{0};
+  double target_time_s{0.0};
   std::string dt_mode;
   double cfl{0.0};
   std::string output_dir;
@@ -53,6 +55,7 @@ struct PerturbationConfig {
   int ell{0};
   int m{0};
   double amplitude{0.0};
+  double r0_cm{0.0};
   std::string target;
 };
 

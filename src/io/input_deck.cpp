@@ -79,7 +79,8 @@ template <typename T>
 }
 
 [[nodiscard]] std::string BuildRuntimeReport(const std::filesystem::path& input,
-                                             const std::filesystem::path& profile) {
+                                             const std::filesystem::path& profile,
+                                             const std::filesystem::path& restart) {
   std::ostringstream out;
   out << std::setprecision(17);
   out << "diagnostic_id=p5.io.runtime_arguments"
@@ -88,7 +89,12 @@ template <typename T>
       << "; profile_file_resolved=" << profile.string()
       << "; profile_file_source=command_line.profile"
       << "; deck_profile_file_present=false"
-      << "; implicit_profile_used=false";
+      << "; implicit_profile_used=false"
+      << "; restart_file_present=" << (!restart.empty() ? "true" : "false");
+  if (!restart.empty()) {
+    out << "; restart_file=" << restart.string()
+        << "; restart_file_source=command_line.restart";
+  }
   return out.str();
 }
 
@@ -204,6 +210,9 @@ InputDeckLoadResult FailDeck(std::string reason) {
       << "; input_deck_path=" << path.string()
       << "; case_name=" << config.run.case_name
       << "; phase=" << config.run.phase
+      << "; target_time_trigger_enabled="
+      << (config.run.target_time_s > 0.0 ? "true" : "false")
+      << "; target_time_s=" << config.run.target_time_s
       << "; profile_file_source=command_line.profile"
       << "; deck_profile_file_present=false"
       << "; implicit_profile_used=false"
@@ -226,6 +235,7 @@ InputDeckLoadResult FailDeck(std::string reason) {
         << "; initial_perturbation_l=" << config.perturbation.ell
         << "; initial_perturbation_m=" << config.perturbation.m
         << "; initial_perturbation_amplitude=" << config.perturbation.amplitude
+        << "; initial_perturbation_r0_cm=" << config.perturbation.r0_cm
         << "; initial_perturbation_target=" << config.perturbation.target;
   }
   out
@@ -261,6 +271,7 @@ InputDeckLoadResult FailDeck(std::string reason) {
 RuntimeArgumentResult ParseP5IORuntimeArguments(const std::vector<std::string>& argv) noexcept {
   std::filesystem::path input;
   std::filesystem::path profile;
+  std::filesystem::path restart;
   for (std::size_t i = 1u; i < argv.size(); ++i) {
     if (argv[i] == "-input") {
       if (i + 1u >= argv.size() || argv[i + 1u].empty()) {
@@ -276,6 +287,13 @@ RuntimeArgumentResult ParseP5IORuntimeArguments(const std::vector<std::string>& 
       profile = argv[++i];
       continue;
     }
+    if (argv[i] == "-restart") {
+      if (i + 1u >= argv.size() || argv[i + 1u].empty()) {
+        return FailRuntime("missing -restart value");
+      }
+      restart = argv[++i];
+      continue;
+    }
     return FailRuntime("unknown argument " + argv[i]);
   }
   if (input.empty()) {
@@ -288,7 +306,8 @@ RuntimeArgumentResult ParseP5IORuntimeArguments(const std::vector<std::string>& 
   result.success = true;
   result.input_deck_path = input;
   result.profile_path = profile;
-  result.report_line = BuildRuntimeReport(input, profile);
+  result.restart_path = restart;
+  result.report_line = BuildRuntimeReport(input, profile, restart);
   return result;
 }
 
@@ -355,6 +374,7 @@ InputDeckLoadResult LoadInputDeck(const std::filesystem::path& input_deck_path) 
   if (!RequireString(*run, "case_name", cfg.run.case_name, failure) ||
       !RequireString(*run, "phase", cfg.run.phase, failure) ||
       !RequireInt(*run, "step_count", cfg.run.step_count, failure) ||
+      !OptionalDouble(*run, "target_time_s", 0.0, cfg.run.target_time_s, failure) ||
       !RequireString(*run, "dt_mode", cfg.run.dt_mode, failure) ||
       !RequireDouble(*run, "cfl", cfg.run.cfl, failure) ||
       !RequireString(*run, "output_dir", cfg.run.output_dir, failure)) {
@@ -415,15 +435,17 @@ InputDeckLoadResult LoadInputDeck(const std::filesystem::path& input_deck_path) 
           !RequireInt(*perturbation, "ell", cfg.perturbation.ell, failure) ||
           !RequireInt(*perturbation, "m", cfg.perturbation.m, failure) ||
           !RequireDouble(*perturbation, "amplitude", cfg.perturbation.amplitude, failure) ||
+          !RequireDouble(*perturbation, "r0_cm", cfg.perturbation.r0_cm, failure) ||
           !RequireString(*perturbation, "target", cfg.perturbation.target, failure)) {
         return FailDeck(failure);
       }
-      if (cfg.perturbation.type != "single_mode_radial_coordinate" ||
-          cfg.perturbation.ell < 0 || cfg.perturbation.m != 0 ||
+      if (cfg.perturbation.type != "single_mode_radial_velocity" ||
+          cfg.perturbation.ell <= 0 || cfg.perturbation.m != 0 ||
           !std::isfinite(cfg.perturbation.amplitude) ||
-          cfg.perturbation.amplitude <= -1.0 ||
-          (cfg.perturbation.target != "radial_coordinate_cm" &&
-           cfg.perturbation.target != "profile_radius_cm")) {
+          cfg.perturbation.amplitude < 0.0 ||
+          !std::isfinite(cfg.perturbation.r0_cm) ||
+          !(cfg.perturbation.r0_cm > 0.0) ||
+          cfg.perturbation.target != "radial_velocity_cm_s") {
         return FailDeck("unsupported perturbation option");
       }
     }
@@ -516,7 +538,8 @@ InputDeckLoadResult LoadInputDeck(const std::filesystem::path& input_deck_path) 
       cfg.output.restart_checkpoint_every_steps < 0 ||
       cfg.output.field_checkpoint_interval_s < 0.0 ||
       cfg.output.restart_checkpoint_interval_s < 0.0 ||
-      cfg.output.history_profile_interval_s < 0.0) {
+      cfg.output.history_profile_interval_s < 0.0 ||
+      cfg.run.target_time_s < 0.0) {
     return FailDeck("output intervals must be nonnegative");
   }
   if (cfg.output.field_checkpoint_format != "csv3d") {

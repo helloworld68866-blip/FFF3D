@@ -12,6 +12,7 @@ namespace {
 
 constexpr double kPlanckWeightIntegral = 6.493939402266829;  // pi^4 / 15.
 constexpr std::size_t kBlackbodyQuadratureIntervals = 256u;
+constexpr double kPlanckTailThreshold = 200.0;
 
 [[nodiscard]] bool Contains(const std::string& text, const char* token) noexcept {
   return text.find(token) != std::string::npos;
@@ -57,23 +58,42 @@ constexpr std::size_t kBlackbodyQuadratureIntervals = 256u;
   return u * u * u / (exp_u - 1.0);
 }
 
+[[nodiscard]] double PlanckTailMoment3(double u) noexcept {
+  if (!(u >= kPlanckTailThreshold) || !std::isfinite(u)) {
+    return 0.0;
+  }
+  const double u2 = u * u;
+  const double polynomial = u * u2 + 3.0 * u2 + 6.0 * u + 6.0;
+  return std::exp(-u) * polynomial;
+}
+
+[[nodiscard]] double IntegratePlanckTail(double u0, double u1) noexcept {
+  const double lower = std::max(u0, kPlanckTailThreshold);
+  if (!(u1 > lower)) {
+    return 0.0;
+  }
+  return std::max(0.0, PlanckTailMoment3(lower) - PlanckTailMoment3(u1));
+}
+
 [[nodiscard]] double IntegratePlanckWeight(double u0, double u1) noexcept {
   if (!(u1 > u0)) {
     return 0.0;
   }
   const double capped_u0 = std::max(0.0, u0);
-  const double capped_u1 = std::min(200.0, u1);
-  if (!(capped_u1 > capped_u0)) {
-    return 0.0;
+  const double capped_u1 = std::min(kPlanckTailThreshold, u1);
+  double integral = 0.0;
+  if (capped_u1 > capped_u0) {
+    const double h =
+        (capped_u1 - capped_u0) / static_cast<double>(kBlackbodyQuadratureIntervals);
+    double sum = PlanckWeightIntegrand(capped_u0) + PlanckWeightIntegrand(capped_u1);
+    for (std::size_t i = 1u; i < kBlackbodyQuadratureIntervals; ++i) {
+      const double u = capped_u0 + h * static_cast<double>(i);
+      sum += (i % 2u == 0u ? 2.0 : 4.0) * PlanckWeightIntegrand(u);
+    }
+    integral += sum * h / 3.0;
   }
-  const double h =
-      (capped_u1 - capped_u0) / static_cast<double>(kBlackbodyQuadratureIntervals);
-  double sum = PlanckWeightIntegrand(capped_u0) + PlanckWeightIntegrand(capped_u1);
-  for (std::size_t i = 1u; i < kBlackbodyQuadratureIntervals; ++i) {
-    const double u = capped_u0 + h * static_cast<double>(i);
-    sum += (i % 2u == 0u ? 2.0 : 4.0) * PlanckWeightIntegrand(u);
-  }
-  return sum * h / 3.0;
+  integral += IntegratePlanckTail(u0, u1);
+  return integral;
 }
 
 [[nodiscard]] std::string BuildReport(double energy, double weight, std::size_t group) {

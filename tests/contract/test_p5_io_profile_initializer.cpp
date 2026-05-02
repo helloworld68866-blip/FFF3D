@@ -1,6 +1,7 @@
 #include "initialization/profile_initializer.hpp"
 #include "io/input_deck.hpp"
 #include "io/radial_profile.hpp"
+#include "test_assert.hpp"
 
 #include <cassert>
 #include <filesystem>
@@ -166,7 +167,7 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
   }
   assert(zero_init.state.alpha_state.storage(0u, 0u, 0u) == 0.0);
 
-  WriteText(deck_path, R"ini(
+  const std::string p2_velocity_deck = R"ini(
 # init_p2.in: initialization P2 perturbation test input
 [run] # run
 case_name = p5_io_init_p2 # case name
@@ -198,11 +199,12 @@ outside_profile_policy = hard_fail # outside policy
 
 [perturbation] # P2 single-mode perturbation
 enabled = true # enable perturbation
-type = single_mode_radial_coordinate # perturb sampled radial coordinate
+type = single_mode_radial_velocity # thesis-style radial velocity perturbation
 ell = 2 # P2 mode
 m = 0 # axisymmetric mode
 amplitude = 0.2 # fractional amplitude
-target = radial_coordinate_cm # tabulated profile radial coordinate target
+r0_cm = 5.0e-3 # inner shell surface radius
+target = radial_velocity_cm_s # perturb radial velocity only
 
 [physics] # physics
 enable_hydro = true # H
@@ -248,7 +250,8 @@ restart_checkpoint_every_steps = 0 # disable restart checkpoint in initializer t
 restart_checkpoint_interval_s = 0.0 # disable restart checkpoint time trigger
 restart_checkpoint_prefix = restart # restart prefix
 restart_checkpoint_format = dec3d_restart_text # restart format
-)ini");
+)ini";
+  WriteText(deck_path, p2_velocity_deck);
   WriteText(profile_path, R"pro(
 # init_p2.pro: monotone radial profile for P2 perturbation
 r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radiation_scale # header
@@ -256,21 +259,45 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
 100.0 20.0 1.0 1.0 0.0 0.0 0.0 0.0 1.0 # outer
 )pro");
   const auto p2_deck = dec3d::io::LoadInputDeck(deck_path);
-  assert(p2_deck.success);
+  DEC3D_CHECK(p2_deck.success);
   const auto p2_profile =
       dec3d::io::LoadRadialProfile(profile_path, p2_deck.config.initial_condition.profile_radius_unit);
-  assert(p2_profile.success);
+  DEC3D_CHECK(p2_profile.success);
   const auto p2_init = dec3d::initialization::InitializeFromRadialProfile(
       p2_deck.config, p2_profile.profile, profile_path);
-  assert(p2_init.success);
-  assert(p2_init.report_line.find("initial_perturbation_enabled=true") != std::string::npos);
-  assert(p2_init.report_line.find("initial_perturbation_type=single_mode_radial_coordinate") !=
-         std::string::npos);
-  assert(p2_init.report_line.find("initial_perturbation_l=2") != std::string::npos);
-  assert(p2_init.report_line.find("initial_perturbation_m=0") != std::string::npos);
-  assert(p2_init.report_line.find("initial_perturbation_target=radial_coordinate_cm") !=
-         std::string::npos);
-  assert(p2_init.state.rho(1u, 0u, 0u) < p2_init.state.rho(1u, 1u, 0u));
+  DEC3D_CHECK(p2_init.success);
+  DEC3D_CHECK(p2_init.report_line.find("initial_perturbation_enabled=true") !=
+              std::string::npos);
+  DEC3D_CHECK(p2_init.report_line.find(
+                  "initial_perturbation_type=single_mode_radial_velocity") !=
+              std::string::npos);
+  DEC3D_CHECK(p2_init.report_line.find("initial_perturbation_l=2") != std::string::npos);
+  DEC3D_CHECK(p2_init.report_line.find("initial_perturbation_m=0") != std::string::npos);
+  DEC3D_CHECK(p2_init.report_line.find(
+                  "initial_perturbation_target=radial_velocity_cm_s") !=
+              std::string::npos);
+  DEC3D_CHECK(p2_init.report_line.find("initial_perturbation_r0_cm=0.005") !=
+              std::string::npos);
+  DEC3D_CHECK(p2_init.report_line.find("density_angular_perturbation=false") !=
+              std::string::npos);
+  DEC3D_CHECK(p2_init.report_line.find("temperature_angular_perturbation=false") !=
+              std::string::npos);
+  DEC3D_CHECK(p2_init.state.rho(1u, 0u, 0u) == p2_init.state.rho(1u, 1u, 0u));
+  DEC3D_CHECK(p2_init.state.e_electron(1u, 0u, 0u) ==
+              p2_init.state.e_electron(1u, 1u, 0u));
+  DEC3D_CHECK(p2_init.state.mom_r(0u, 0u, 0u) > p2_init.state.mom_r(0u, 1u, 0u));
+
+  auto old_coordinate_deck = p2_velocity_deck;
+  const std::string velocity_type = "type = single_mode_radial_velocity";
+  const auto velocity_type_pos = old_coordinate_deck.find(velocity_type);
+  DEC3D_CHECK(velocity_type_pos != std::string::npos);
+  old_coordinate_deck.replace(
+      velocity_type_pos,
+      velocity_type.size(),
+      "type = single_mode_radial_coordinate");
+  WriteText(deck_path, old_coordinate_deck);
+  const auto old_coordinate_load = dec3d::io::LoadInputDeck(deck_path);
+  DEC3D_CHECK(!old_coordinate_load.success);
 
   std::filesystem::remove_all(root);
   return 0;

@@ -26,11 +26,12 @@ profile_radius_unit = um # .pro 半径单位为微米
 outside_profile_policy = hard_fail # profile 覆盖不足时直接失败
 [perturbation] # 初始扰动设置
 enabled = true # 启用初始扰动
-type = single_mode_radial_coordinate # 使用旧 Python 路径同口径的径向坐标扰动
+type = single_mode_radial_velocity # 论文口径：只扰动径向速度
 ell = 2 # P2 模态
 m = 0 # 轴对称 m=0
-amplitude = 0.10 # P2 扰动幅度，按 single_mode_p2_3d_100ps thesis hydro 口径
-target = radial_coordinate_cm # 对 tabulated radial profile 的采样半径做扰动
+amplitude = 0.07 # P2 速度扰动幅度 Δv/v0；论文 Fig. 3.10/3.17 使用 7%
+r0_cm = 2.4070450097847356e-3 # 当前 image profile 的内壳面扰动中心半径，24.070450097847356 um
+target = radial_velocity_cm_s # 只对 v_r 加论文式速度扰动
 [physics] # 物理模块开关
 enable_hydro = true # 启用 H
 enable_thermal = true # 启用 T

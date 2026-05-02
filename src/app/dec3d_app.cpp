@@ -33,10 +33,12 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -87,6 +89,23 @@ struct RuntimeStageResult {
   double hydro_ale_proposal_wall_s{0.0};
   double hydro_stage_state_wall_s{0.0};
   double hydro_advance_wall_s{0.0};
+  double hydro_snapshot_wall_s{0.0};
+  double hydro_scratch_wall_s{0.0};
+  double hydro_radial_sweep_wall_s{0.0};
+  double hydro_macro_detect_wall_s{0.0};
+  double hydro_macro_restrict_wall_s{0.0};
+  double hydro_macro_update_wall_s{0.0};
+  double hydro_macro_radial_update_wall_s{0.0};
+  double hydro_macro_theta_update_wall_s{0.0};
+  double hydro_macro_phi_update_wall_s{0.0};
+  double hydro_macro_state_update_wall_s{0.0};
+  double hydro_macro_prolong_wall_s{0.0};
+  double hydro_theta_sweep_wall_s{0.0};
+  double hydro_phi_sweep_wall_s{0.0};
+  double hydro_commit_wall_s{0.0};
+  double hydro_source_wall_s{0.0};
+  double hydro_budget_wall_s{0.0};
+  double hydro_diagnostics_wall_s{0.0};
   double hydro_writeback_wall_s{0.0};
   double hydro_global_gate_wall_s{0.0};
   double coefficient_provider_wall_s{0.0};
@@ -141,6 +160,17 @@ struct RuntimeNohExactInflowState {
 
 [[nodiscard]] double ElapsedSecondsSince(
     const std::chrono::steady_clock::time_point& start);
+
+void AddHydroAdvanceTimingFromDiagnostics(
+    RuntimeStageResult& result,
+    const dec3d::core::DiagnosticsPayload& diagnostics);
+
+void AddHydroAdvanceTimingFromStaticGrid(
+    RuntimeStageResult& result,
+    const dec3d::hydro::StaticGridHydroResult& hydro);
+
+void AppendHydroAdvanceTimingFields(std::ostringstream& report,
+                                    const RuntimeStageResult& result);
 
 [[nodiscard]] std::string JoinStageOrder(const std::vector<char>& stages) {
   std::ostringstream out;
@@ -715,8 +745,9 @@ void FillGhostStateFromExchanges(
            << "; h_halo_exchange_wall_s=" << result.hydro_halo_exchange_wall_s
            << "; h_ale_proposal_wall_s=" << result.hydro_ale_proposal_wall_s
            << "; h_stage_state_wall_s=" << result.hydro_stage_state_wall_s
-           << "; h_hydro_advance_wall_s=" << result.hydro_advance_wall_s
-           << "; h_writeback_wall_s=" << result.hydro_writeback_wall_s
+           << "; h_hydro_advance_wall_s=" << result.hydro_advance_wall_s;
+    AppendHydroAdvanceTimingFields(report, result);
+    report << "; h_writeback_wall_s=" << result.hydro_writeback_wall_s
            << "; h_global_gate_wall_s=" << result.hydro_global_gate_wall_s
            << "; nested_ghost_report={" << ghost.override.report_line << "}"
            << "; alpha_hydro_terms_report_present=true"
@@ -744,14 +775,15 @@ void FillGhostStateFromExchanges(
   }
   options.use_macro_ale_direct_moving_face_hllc = false;
   section_start = std::chrono::steady_clock::now();
-  const auto hydro = dec3d::hydro::AdvanceStaticGridHydro(
-      staged_view,
-      local_geometry,
-      dt_s,
-      ghost.override,
-      options);
-  result.hydro_advance_wall_s += ElapsedSecondsSince(section_start);
-  const int local_stage_ok = hydro.success ? 1 : 0;
+    const auto hydro = dec3d::hydro::AdvanceStaticGridHydro(
+        staged_view,
+        local_geometry,
+        dt_s,
+        ghost.override,
+        options);
+    result.hydro_advance_wall_s += ElapsedSecondsSince(section_start);
+    AddHydroAdvanceTimingFromStaticGrid(result, hydro);
+    const int local_stage_ok = hydro.success ? 1 : 0;
   int global_stage_ok = 0;
   section_start = std::chrono::steady_clock::now();
   MPI_Allreduce(&local_stage_ok, &global_stage_ok, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
@@ -805,8 +837,9 @@ void FillGhostStateFromExchanges(
          << "; h_halo_exchange_wall_s=" << result.hydro_halo_exchange_wall_s
          << "; h_ale_proposal_wall_s=" << result.hydro_ale_proposal_wall_s
          << "; h_stage_state_wall_s=" << result.hydro_stage_state_wall_s
-         << "; h_hydro_advance_wall_s=" << result.hydro_advance_wall_s
-         << "; h_writeback_wall_s=" << result.hydro_writeback_wall_s
+         << "; h_hydro_advance_wall_s=" << result.hydro_advance_wall_s;
+  AppendHydroAdvanceTimingFields(report, result);
+  report << "; h_writeback_wall_s=" << result.hydro_writeback_wall_s
          << "; h_global_gate_wall_s=" << result.hydro_global_gate_wall_s
          << "; nested_ghost_report={" << ghost.override.report_line << "}"
          << "; alpha_hydro_terms_report_present=true"
@@ -1067,7 +1100,10 @@ void GatherLocalStateToRoot(
   if (!hydro.bind(context, geometry, state)) {
     return FailStage('H', "hydro bind failed");
   }
+  RuntimeStageResult result;
+  auto section_start = std::chrono::steady_clock::now();
   const auto hydro_result = hydro.advance();
+  result.hydro_advance_wall_s += ElapsedSecondsSince(section_start);
   if (!hydro_result.success) {
     std::ostringstream nested;
     for (const auto& entry : hydro_result.diagnostics.entries) {
@@ -1078,7 +1114,7 @@ void GatherLocalStateToRoot(
                                                           : hydro_result.failure_reason,
                      nested.str());
   }
-  RuntimeStageResult result;
+  AddHydroAdvanceTimingFromDiagnostics(result, hydro_result.diagnostics);
   result.success = true;
   std::ostringstream report;
   report << "diagnostic_id=p5.runtime.stage"
@@ -1090,7 +1126,9 @@ void GatherLocalStateToRoot(
          << "; alpha_hydro_coupling_mode=hydro_hllc_species_scalar_alpha_pressure"
          << "; radiation_hydro_terms_report_present=true"
          << "; radiation_hydro_terms_enabled=" << (enable_radiation_hydro_terms ? "true" : "false")
-         << "; radiation_hydro_coupling_mode=hydro_hllc_species_scalar_radiation_pressure";
+         << "; radiation_hydro_coupling_mode=hydro_hllc_species_scalar_radiation_pressure"
+         << "; h_hydro_advance_wall_s=" << result.hydro_advance_wall_s;
+  AppendHydroAdvanceTimingFields(report, result);
   result.report_line = report.str();
   return result;
 }
@@ -1470,6 +1508,23 @@ struct RuntimeLoopResult {
   double h_ale_proposal_wall_s{0.0};
   double h_stage_state_wall_s{0.0};
   double h_hydro_advance_wall_s{0.0};
+  double h_hydro_snapshot_wall_s{0.0};
+  double h_hydro_scratch_wall_s{0.0};
+  double h_hydro_radial_sweep_wall_s{0.0};
+  double h_hydro_macro_detect_wall_s{0.0};
+  double h_hydro_macro_restrict_wall_s{0.0};
+  double h_hydro_macro_update_wall_s{0.0};
+  double h_hydro_macro_radial_update_wall_s{0.0};
+  double h_hydro_macro_theta_update_wall_s{0.0};
+  double h_hydro_macro_phi_update_wall_s{0.0};
+  double h_hydro_macro_state_update_wall_s{0.0};
+  double h_hydro_macro_prolong_wall_s{0.0};
+  double h_hydro_theta_sweep_wall_s{0.0};
+  double h_hydro_phi_sweep_wall_s{0.0};
+  double h_hydro_commit_wall_s{0.0};
+  double h_hydro_source_wall_s{0.0};
+  double h_hydro_budget_wall_s{0.0};
+  double h_hydro_diagnostics_wall_s{0.0};
   double h_writeback_wall_s{0.0};
   double h_global_gate_wall_s{0.0};
   double t_stage_wall_s{0.0};
@@ -1506,6 +1561,147 @@ struct RuntimeLoopResult {
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
 
+[[nodiscard]] bool TargetTimeEnabled(const dec3d::io::InputDeckConfig& config) noexcept {
+  return config.run.target_time_s > 0.0;
+}
+
+[[nodiscard]] bool TargetTimeReached(const dec3d::io::InputDeckConfig& config,
+                                     const double time_s) noexcept {
+  if (!TargetTimeEnabled(config)) {
+    return false;
+  }
+  const double tolerance = std::max(1.0e-30, std::abs(config.run.target_time_s) * 1.0e-12);
+  return time_s + tolerance >= config.run.target_time_s;
+}
+
+[[nodiscard]] double ClampDtToTargetTime(const dec3d::io::InputDeckConfig& config,
+                                         const double time_s,
+                                         const double dt_s) noexcept {
+  if (!TargetTimeEnabled(config)) {
+    return dt_s;
+  }
+  const double remaining_s = config.run.target_time_s - time_s;
+  if (!(remaining_s > 0.0)) {
+    return 0.0;
+  }
+  return std::min(dt_s, remaining_s);
+}
+
+[[nodiscard]] bool ParseRuntimeDoubleField(
+    std::string_view report_line,
+    std::string_view key,
+    double* value_out) {
+  if (value_out == nullptr) {
+    return false;
+  }
+  const std::string needle = std::string(key) + "=";
+  const auto key_position = report_line.find(needle);
+  if (key_position == std::string_view::npos) {
+    return false;
+  }
+  const auto value_begin = key_position + needle.size();
+  auto value_end = report_line.find(';', value_begin);
+  if (value_end == std::string_view::npos) {
+    value_end = report_line.size();
+  }
+  std::istringstream in(std::string(report_line.substr(value_begin, value_end - value_begin)));
+  double parsed = 0.0;
+  in >> parsed;
+  if (!in) {
+    return false;
+  }
+  *value_out = parsed;
+  return true;
+}
+
+void AddHydroAdvanceTimingFromReport(RuntimeStageResult& result,
+                                     std::string_view report_line) {
+  const auto add_field = [&](std::string_view key, double& target) {
+    double value = 0.0;
+    if (ParseRuntimeDoubleField(report_line, key, &value)) {
+      target += value;
+    }
+  };
+  add_field("h_hydro_snapshot_wall_s", result.hydro_snapshot_wall_s);
+  add_field("h_hydro_scratch_wall_s", result.hydro_scratch_wall_s);
+  add_field("h_hydro_radial_sweep_wall_s", result.hydro_radial_sweep_wall_s);
+  add_field("h_hydro_macro_detect_wall_s", result.hydro_macro_detect_wall_s);
+  add_field("h_hydro_macro_restrict_wall_s", result.hydro_macro_restrict_wall_s);
+  add_field("h_hydro_macro_update_wall_s", result.hydro_macro_update_wall_s);
+  add_field("h_hydro_macro_radial_update_wall_s",
+            result.hydro_macro_radial_update_wall_s);
+  add_field("h_hydro_macro_theta_update_wall_s",
+            result.hydro_macro_theta_update_wall_s);
+  add_field("h_hydro_macro_phi_update_wall_s",
+            result.hydro_macro_phi_update_wall_s);
+  add_field("h_hydro_macro_state_update_wall_s",
+            result.hydro_macro_state_update_wall_s);
+  add_field("h_hydro_macro_prolong_wall_s", result.hydro_macro_prolong_wall_s);
+  add_field("h_hydro_theta_sweep_wall_s", result.hydro_theta_sweep_wall_s);
+  add_field("h_hydro_phi_sweep_wall_s", result.hydro_phi_sweep_wall_s);
+  add_field("h_hydro_commit_wall_s", result.hydro_commit_wall_s);
+  add_field("h_hydro_source_wall_s", result.hydro_source_wall_s);
+  add_field("h_hydro_budget_wall_s", result.hydro_budget_wall_s);
+  add_field("h_hydro_diagnostics_wall_s", result.hydro_diagnostics_wall_s);
+}
+
+void AddHydroAdvanceTimingFromDiagnostics(
+    RuntimeStageResult& result,
+    const dec3d::core::DiagnosticsPayload& diagnostics) {
+  for (const auto& entry : diagnostics.entries) {
+    if (entry.code == "p1.hydro.static_grid.timing") {
+      AddHydroAdvanceTimingFromReport(result, entry.message);
+    }
+  }
+}
+
+void AddHydroAdvanceTimingFromStaticGrid(
+    RuntimeStageResult& result,
+    const dec3d::hydro::StaticGridHydroResult& hydro) {
+  result.hydro_snapshot_wall_s += hydro.timing_snapshot_wall_s;
+  result.hydro_scratch_wall_s += hydro.timing_scratch_wall_s;
+  result.hydro_radial_sweep_wall_s += hydro.timing_radial_sweep_wall_s;
+  result.hydro_macro_detect_wall_s += hydro.timing_macro_detect_wall_s;
+  result.hydro_macro_restrict_wall_s += hydro.timing_macro_restrict_wall_s;
+  result.hydro_macro_update_wall_s += hydro.timing_macro_update_wall_s;
+  result.hydro_macro_radial_update_wall_s += hydro.timing_macro_radial_update_wall_s;
+  result.hydro_macro_theta_update_wall_s += hydro.timing_macro_theta_update_wall_s;
+  result.hydro_macro_phi_update_wall_s += hydro.timing_macro_phi_update_wall_s;
+  result.hydro_macro_state_update_wall_s += hydro.timing_macro_state_update_wall_s;
+  result.hydro_macro_prolong_wall_s += hydro.timing_macro_prolong_wall_s;
+  result.hydro_theta_sweep_wall_s += hydro.timing_theta_sweep_wall_s;
+  result.hydro_phi_sweep_wall_s += hydro.timing_phi_sweep_wall_s;
+  result.hydro_commit_wall_s += hydro.timing_commit_wall_s;
+  result.hydro_source_wall_s += hydro.timing_source_wall_s;
+  result.hydro_budget_wall_s += hydro.timing_budget_wall_s;
+  result.hydro_diagnostics_wall_s += hydro.timing_diagnostics_wall_s;
+}
+
+void AppendHydroAdvanceTimingFields(std::ostringstream& report,
+                                    const RuntimeStageResult& result) {
+  report << "; h_hydro_snapshot_wall_s=" << result.hydro_snapshot_wall_s
+         << "; h_hydro_scratch_wall_s=" << result.hydro_scratch_wall_s
+         << "; h_hydro_radial_sweep_wall_s=" << result.hydro_radial_sweep_wall_s
+         << "; h_hydro_macro_detect_wall_s=" << result.hydro_macro_detect_wall_s
+         << "; h_hydro_macro_restrict_wall_s=" << result.hydro_macro_restrict_wall_s
+         << "; h_hydro_macro_update_wall_s=" << result.hydro_macro_update_wall_s
+         << "; h_hydro_macro_radial_update_wall_s="
+         << result.hydro_macro_radial_update_wall_s
+         << "; h_hydro_macro_theta_update_wall_s="
+         << result.hydro_macro_theta_update_wall_s
+         << "; h_hydro_macro_phi_update_wall_s="
+         << result.hydro_macro_phi_update_wall_s
+         << "; h_hydro_macro_state_update_wall_s="
+         << result.hydro_macro_state_update_wall_s
+         << "; h_hydro_macro_prolong_wall_s=" << result.hydro_macro_prolong_wall_s
+         << "; h_hydro_theta_sweep_wall_s=" << result.hydro_theta_sweep_wall_s
+         << "; h_hydro_phi_sweep_wall_s=" << result.hydro_phi_sweep_wall_s
+         << "; h_hydro_commit_wall_s=" << result.hydro_commit_wall_s
+         << "; h_hydro_source_wall_s=" << result.hydro_source_wall_s
+         << "; h_hydro_budget_wall_s=" << result.hydro_budget_wall_s
+         << "; h_hydro_diagnostics_wall_s=" << result.hydro_diagnostics_wall_s;
+}
+
 void AddRuntimeStageWallTime(RuntimeLoopResult& loop, const char stage, const double seconds) {
   switch (stage) {
     case 'H':
@@ -1538,6 +1734,23 @@ void AddRuntimeStagePerformance(RuntimeLoopResult& loop,
       loop.h_ale_proposal_wall_s += result.hydro_ale_proposal_wall_s;
       loop.h_stage_state_wall_s += result.hydro_stage_state_wall_s;
       loop.h_hydro_advance_wall_s += result.hydro_advance_wall_s;
+      loop.h_hydro_snapshot_wall_s += result.hydro_snapshot_wall_s;
+      loop.h_hydro_scratch_wall_s += result.hydro_scratch_wall_s;
+      loop.h_hydro_radial_sweep_wall_s += result.hydro_radial_sweep_wall_s;
+      loop.h_hydro_macro_detect_wall_s += result.hydro_macro_detect_wall_s;
+      loop.h_hydro_macro_restrict_wall_s += result.hydro_macro_restrict_wall_s;
+      loop.h_hydro_macro_update_wall_s += result.hydro_macro_update_wall_s;
+      loop.h_hydro_macro_radial_update_wall_s += result.hydro_macro_radial_update_wall_s;
+      loop.h_hydro_macro_theta_update_wall_s += result.hydro_macro_theta_update_wall_s;
+      loop.h_hydro_macro_phi_update_wall_s += result.hydro_macro_phi_update_wall_s;
+      loop.h_hydro_macro_state_update_wall_s += result.hydro_macro_state_update_wall_s;
+      loop.h_hydro_macro_prolong_wall_s += result.hydro_macro_prolong_wall_s;
+      loop.h_hydro_theta_sweep_wall_s += result.hydro_theta_sweep_wall_s;
+      loop.h_hydro_phi_sweep_wall_s += result.hydro_phi_sweep_wall_s;
+      loop.h_hydro_commit_wall_s += result.hydro_commit_wall_s;
+      loop.h_hydro_source_wall_s += result.hydro_source_wall_s;
+      loop.h_hydro_budget_wall_s += result.hydro_budget_wall_s;
+      loop.h_hydro_diagnostics_wall_s += result.hydro_diagnostics_wall_s;
       loop.h_writeback_wall_s += result.hydro_writeback_wall_s;
       loop.h_global_gate_wall_s += result.hydro_global_gate_wall_s;
       break;
@@ -1580,6 +1793,27 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
          << "; h_ale_proposal_wall_s=" << loop.h_ale_proposal_wall_s
          << "; h_stage_state_wall_s=" << loop.h_stage_state_wall_s
          << "; h_hydro_advance_wall_s=" << loop.h_hydro_advance_wall_s
+         << "; h_hydro_snapshot_wall_s=" << loop.h_hydro_snapshot_wall_s
+         << "; h_hydro_scratch_wall_s=" << loop.h_hydro_scratch_wall_s
+         << "; h_hydro_radial_sweep_wall_s=" << loop.h_hydro_radial_sweep_wall_s
+         << "; h_hydro_macro_detect_wall_s=" << loop.h_hydro_macro_detect_wall_s
+         << "; h_hydro_macro_restrict_wall_s=" << loop.h_hydro_macro_restrict_wall_s
+         << "; h_hydro_macro_update_wall_s=" << loop.h_hydro_macro_update_wall_s
+         << "; h_hydro_macro_radial_update_wall_s="
+         << loop.h_hydro_macro_radial_update_wall_s
+         << "; h_hydro_macro_theta_update_wall_s="
+         << loop.h_hydro_macro_theta_update_wall_s
+         << "; h_hydro_macro_phi_update_wall_s="
+         << loop.h_hydro_macro_phi_update_wall_s
+         << "; h_hydro_macro_state_update_wall_s="
+         << loop.h_hydro_macro_state_update_wall_s
+         << "; h_hydro_macro_prolong_wall_s=" << loop.h_hydro_macro_prolong_wall_s
+         << "; h_hydro_theta_sweep_wall_s=" << loop.h_hydro_theta_sweep_wall_s
+         << "; h_hydro_phi_sweep_wall_s=" << loop.h_hydro_phi_sweep_wall_s
+         << "; h_hydro_commit_wall_s=" << loop.h_hydro_commit_wall_s
+         << "; h_hydro_source_wall_s=" << loop.h_hydro_source_wall_s
+         << "; h_hydro_budget_wall_s=" << loop.h_hydro_budget_wall_s
+         << "; h_hydro_diagnostics_wall_s=" << loop.h_hydro_diagnostics_wall_s
          << "; h_writeback_wall_s=" << loop.h_writeback_wall_s
          << "; h_global_gate_wall_s=" << loop.h_global_gate_wall_s
          << "; t_stage_wall_s=" << loop.t_stage_wall_s
@@ -1608,13 +1842,222 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
          << "; a_solver_iterations=" << loop.a_solver_iterations;
 }
 
+struct RestartInitialState {
+  bool success{false};
+  dec3d::state::CanonicalState state;
+  std::size_t step{0u};
+  double time_s{0.0};
+  std::string report_line;
+  std::string failure_reason;
+  std::string failure_diagnostics;
+};
+
+struct RuntimeStartPoint {
+  std::size_t step{0u};
+  double time_s{0.0};
+};
+
+[[nodiscard]] std::vector<std::string> SplitCsvLine(const std::string& line) {
+  std::vector<std::string> parts;
+  std::string current;
+  std::istringstream in(line);
+  while (std::getline(in, current, ',')) {
+    parts.push_back(current);
+  }
+  return parts;
+}
+
+[[nodiscard]] bool ParseRestartBool(const std::string& value) noexcept {
+  return value == "true" || value == "1";
+}
+
+[[nodiscard]] RestartInitialState FailRestartLoad(
+    std::string reason,
+    const std::filesystem::path& restart_path) {
+  RestartInitialState result;
+  result.failure_reason = std::move(reason);
+  result.failure_diagnostics =
+      "diagnostic_id=p5.io.restart_load.failure; failure_reason=" +
+      result.failure_reason + "; restart_file=" + restart_path.string();
+  return result;
+}
+
+[[nodiscard]] dec3d::core::AuthoritativeFieldMask RestartAuthoritativeMask() noexcept {
+  using dec3d::core::AuthoritativeField;
+  return dec3d::core::ToMask(AuthoritativeField::rho) |
+         dec3d::core::ToMask(AuthoritativeField::mom_r) |
+         dec3d::core::ToMask(AuthoritativeField::mom_theta) |
+         dec3d::core::ToMask(AuthoritativeField::mom_phi) |
+         dec3d::core::ToMask(AuthoritativeField::e_fluid_total) |
+         dec3d::core::ToMask(AuthoritativeField::e_electron) |
+         dec3d::core::ToMask(AuthoritativeField::radiation_groups) |
+         dec3d::core::ToMask(AuthoritativeField::alpha_state);
+}
+
+[[nodiscard]] RestartInitialState LoadRestartInitialState(
+    const std::filesystem::path& restart_path,
+    const dec3d::io::InputDeckConfig& config,
+    const dec3d::radiation::RadiationGroupLayout& group_layout) {
+  std::ifstream in(restart_path);
+  if (!in) {
+    return FailRestartLoad("missing restart file", restart_path);
+  }
+
+  bool saw_header = false;
+  bool restart_compatible = false;
+  std::size_t step = 0u;
+  double time_s = 0.0;
+  dec3d::state::CanonicalStateLayout layout;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.rfind("#", 0) != 0) {
+      saw_header = line == "field,group,radial,theta,phi,value";
+      break;
+    }
+    const auto eq = line.find('=');
+    if (eq == std::string::npos) {
+      continue;
+    }
+    const auto key_begin = line.find_first_not_of("# \t");
+    if (key_begin == std::string::npos || key_begin >= eq) {
+      continue;
+    }
+    const auto key = line.substr(key_begin, eq - key_begin);
+    const auto value = line.substr(eq + 1u);
+    try {
+      if (key == "restart_compatible") {
+        restart_compatible = ParseRestartBool(value);
+      } else if (key == "step") {
+        step = static_cast<std::size_t>(std::stoull(value));
+      } else if (key == "time_s") {
+        time_s = std::stod(value);
+      } else if (key == "radial_cells") {
+        layout.radial_cells = static_cast<std::size_t>(std::stoull(value));
+      } else if (key == "theta_cells") {
+        layout.theta_cells = static_cast<std::size_t>(std::stoull(value));
+      } else if (key == "phi_cells") {
+        layout.phi_cells = static_cast<std::size_t>(std::stoull(value));
+      } else if (key == "radiation_group_count") {
+        layout.radiation_group_count = static_cast<std::size_t>(std::stoull(value));
+      }
+    } catch (const std::exception&) {
+      return FailRestartLoad("invalid restart metadata value", restart_path);
+    }
+  }
+
+  if (!restart_compatible) {
+    return FailRestartLoad("restart file is not restart compatible", restart_path);
+  }
+  if (!saw_header) {
+    return FailRestartLoad("restart field header is missing", restart_path);
+  }
+  if (layout.radial_cells != config.mesh.radial_cells ||
+      layout.theta_cells != config.mesh.theta_cells ||
+      layout.phi_cells != config.mesh.phi_cells ||
+      layout.radiation_group_count != group_layout.group_count) {
+    return FailRestartLoad("restart layout does not match input deck", restart_path);
+  }
+  if (!(time_s >= 0.0) || !std::isfinite(time_s)) {
+    return FailRestartLoad("restart time is not finite", restart_path);
+  }
+
+  auto state = dec3d::state::CanonicalState::Create(layout);
+  const std::size_t cell_count =
+      layout.radial_cells * layout.theta_cells * layout.phi_cells;
+  std::size_t rho_count = 0u;
+  std::size_t mom_r_count = 0u;
+  std::size_t mom_theta_count = 0u;
+  std::size_t mom_phi_count = 0u;
+  std::size_t e_fluid_total_count = 0u;
+  std::size_t e_electron_count = 0u;
+  std::size_t radiation_count = 0u;
+  std::size_t alpha_count = 0u;
+
+  while (std::getline(in, line)) {
+    if (line.empty() || line.rfind("#", 0) == 0) {
+      continue;
+    }
+    const auto parts = SplitCsvLine(line);
+    if (parts.size() != 6u) {
+      return FailRestartLoad("invalid restart field row", restart_path);
+    }
+    try {
+      const auto& field = parts[0];
+      const int group = std::stoi(parts[1]);
+      const std::size_t r = static_cast<std::size_t>(std::stoull(parts[2]));
+      const std::size_t t = static_cast<std::size_t>(std::stoull(parts[3]));
+      const std::size_t p = static_cast<std::size_t>(std::stoull(parts[4]));
+      const double value = std::stod(parts[5]);
+      if (r >= layout.radial_cells || t >= layout.theta_cells ||
+          p >= layout.phi_cells || !std::isfinite(value)) {
+        return FailRestartLoad("restart field row is out of range", restart_path);
+      }
+      if (field == "rho" && group == -1) {
+        state.rho(r, t, p) = value;
+        ++rho_count;
+      } else if (field == "mom_r" && group == -1) {
+        state.mom_r(r, t, p) = value;
+        ++mom_r_count;
+      } else if (field == "mom_theta" && group == -1) {
+        state.mom_theta(r, t, p) = value;
+        ++mom_theta_count;
+      } else if (field == "mom_phi" && group == -1) {
+        state.mom_phi(r, t, p) = value;
+        ++mom_phi_count;
+      } else if (field == "e_electron" && group == -1) {
+        state.e_electron(r, t, p) = value;
+        ++e_electron_count;
+      } else if (field == "e_fluid_total" && group == -1) {
+        state.e_fluid_total(r, t, p) = value;
+        ++e_fluid_total_count;
+      } else if (field == "radiation_groups" && group >= 0 &&
+                 static_cast<std::size_t>(group) < state.radiation_groups.size()) {
+        state.radiation_groups[static_cast<std::size_t>(group)](r, t, p) = value;
+        ++radiation_count;
+      } else if (field == "alpha_state" && group == -1) {
+        state.alpha_state.storage(r, t, p) = value;
+        ++alpha_count;
+      }
+    } catch (const std::exception&) {
+      return FailRestartLoad("invalid restart field value", restart_path);
+    }
+  }
+
+  if (rho_count != cell_count || mom_r_count != cell_count ||
+      mom_theta_count != cell_count || mom_phi_count != cell_count ||
+      e_electron_count != cell_count || e_fluid_total_count != cell_count ||
+      alpha_count != cell_count ||
+      radiation_count != cell_count * group_layout.group_count) {
+    return FailRestartLoad("restart payload is incomplete", restart_path);
+  }
+
+  state.ApplyAuthoritativeWrite(RestartAuthoritativeMask());
+  RestartInitialState result;
+  result.success = true;
+  result.state = std::move(state);
+  result.step = step;
+  result.time_s = time_s;
+  std::ostringstream report;
+  report << std::setprecision(17)
+         << "diagnostic_id=p5.io.restart_load"
+         << "; restart_file=" << restart_path.string()
+         << "; restart_step=" << step
+         << "; restart_time_s=" << time_s
+         << "; restart_layout_matches_deck=true"
+         << "; restart_payload_complete=true"
+         << "; restart_authoritative_state_restored=true";
+  result.report_line = report.str();
+  return result;
+}
+
 [[nodiscard]] RuntimeLoopResult ExecuteP5RuntimeLoop(
     const dec3d::io::InputDeckConfig& config,
     dec3d::state::CanonicalState& state,
     const dec3d::mesh::SphericalGeometryMetadata& geometry,
     const dec3d::radiation::RadiationGroupLayout& group_layout,
     const std::filesystem::path& input_deck_path,
-    const std::filesystem::path& profile_path) {
+    const std::filesystem::path& profile_path,
+    const RuntimeStartPoint& start) {
   RuntimeLoopResult loop;
   if (config.run.step_count <= 0) {
     loop.success = true;
@@ -1662,13 +2105,20 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
     serial_opacity_table = table_result.table;
     serial_opacity_table_loaded = true;
   }
-  double time_s = 0.0;
+  double time_s = start.time_s;
   dec3d::io::RuntimeOutputStepState output_state;
+  output_state.last_field_checkpoint_time_s = start.time_s;
+  output_state.last_restart_checkpoint_time_s = start.time_s;
+  output_state.last_history_profile_time_s = start.time_s;
   const auto wall_start = std::chrono::steady_clock::now();
-  for (int step_index = 1; step_index <= config.run.step_count; ++step_index) {
+  for (int local_step_index = 1; local_step_index <= config.run.step_count; ++local_step_index) {
+    const std::size_t step_index = start.step + static_cast<std::size_t>(local_step_index);
+    if (TargetTimeReached(config, time_s)) {
+      break;
+    }
     const auto dt_timer = std::chrono::steady_clock::now();
-  dec3d::hydro::HydroOperator hydro_for_dt;
-  dec3d::hydro::StaticGridHydroOptions hydro_options;
+    dec3d::hydro::HydroOperator hydro_for_dt;
+    dec3d::hydro::StaticGridHydroOptions hydro_options;
     hydro_options.use_ppm_reconstruction = false;
     hydro_for_dt.SetStaticGridOptions(hydro_options);
     dec3d::core::StageContext dt_context;
@@ -1694,12 +2144,16 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
                                  loop.failure_reason + "; dt_evidence=" + dt_advice.evidence;
       return loop;
     }
-    const double dt_s = std::max(0.0, config.run.cfl) * dt_advice.hard_cap_dt;
+    double dt_s = std::max(0.0, config.run.cfl) * dt_advice.hard_cap_dt;
     if (!(dt_s > 0.0) || !std::isfinite(dt_s)) {
       loop.failure_reason = "runtime dt is not positive finite";
       loop.failure_diagnostics = "diagnostic_id=p5.runtime.loop.failure; failure_reason=" +
                                  loop.failure_reason;
       return loop;
+    }
+    dt_s = ClampDtToTargetTime(config, time_s, dt_s);
+    if (!(dt_s > 0.0) || !std::isfinite(dt_s)) {
+      break;
     }
     loop.dt_estimator_wall_s += ElapsedSecondsSince(dt_timer);
 
@@ -1747,7 +2201,7 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
     }
 
     time_s += dt_s;
-    loop.steps_executed = static_cast<std::size_t>(step_index);
+    loop.steps_executed = static_cast<std::size_t>(local_step_index);
     loop.final_time_s = time_s;
     const auto wall_elapsed =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
@@ -1772,6 +2226,11 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
          << "; runtime_stage_backend=serial_callable_runtime"
          << "; runtime_steps_executed=" << loop.steps_executed
          << "; final_time_s=" << loop.final_time_s
+         << "; target_time_trigger_enabled="
+         << (TargetTimeEnabled(config) ? "true" : "false")
+         << "; target_time_s=" << config.run.target_time_s
+         << "; target_time_reached="
+         << (TargetTimeReached(config, loop.final_time_s) ? "true" : "false")
          << "; h_stage_executed=" << (stage_order.find('H') != std::string::npos ? "true" : "false")
          << "; t_stage_executed=" << (stage_order.find('T') != std::string::npos ? "true" : "false")
          << "; e_stage_executed=" << (stage_order.find('E') != std::string::npos ? "true" : "false")
@@ -1795,7 +2254,8 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
     const dec3d::radiation::RadiationGroupLayout& group_layout,
     const std::filesystem::path& input_deck_path,
     const std::filesystem::path& profile_path,
-    const MpiRuntimeContext& mpi_context) {
+    const MpiRuntimeContext& mpi_context,
+    const RuntimeStartPoint& start) {
   RuntimeLoopResult loop;
   if (config.run.step_count <= 0) {
     loop.success = true;
@@ -1908,8 +2368,11 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
   bool allgather_after_distributed_stages = false;
   bool root_gather_for_checkpoint_outputs = false;
   bool runtime_scalar_output_uses_mpi_reduce = false;
-  double time_s = 0.0;
+  double time_s = start.time_s;
   dec3d::io::RuntimeOutputStepState output_state;
+  output_state.last_field_checkpoint_time_s = start.time_s;
+  output_state.last_restart_checkpoint_time_s = start.time_s;
+  output_state.last_history_profile_time_s = start.time_s;
   const auto wall_start = std::chrono::steady_clock::now();
   const auto noh_exact_inflow =
       BuildRuntimeNohExactInflowState(config, local_state, hydro_decomposition, mpi_context.rank);
@@ -1922,7 +2385,11 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
     return loop;
   }
 
-  for (int step_index = 1; step_index <= config.run.step_count; ++step_index) {
+  for (int local_step_index = 1; local_step_index <= config.run.step_count; ++local_step_index) {
+    const std::size_t step_index = start.step + static_cast<std::size_t>(local_step_index);
+    if (TargetTimeReached(config, time_s)) {
+      break;
+    }
     const auto dt_timer = std::chrono::steady_clock::now();
     dec3d::hydro::HydroOperator hydro_for_dt;
     auto hydro_options = RuntimeHydroOptions(config);
@@ -1958,12 +2425,16 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
         MPI_DOUBLE,
         MPI_MIN,
         MPI_COMM_WORLD);
-    const double dt_s = std::max(0.0, config.run.cfl) * global_hard_cap_dt;
+    double dt_s = std::max(0.0, config.run.cfl) * global_hard_cap_dt;
     if (!(dt_s > 0.0) || !std::isfinite(dt_s)) {
       loop.failure_reason = "runtime dt is not positive finite";
       loop.failure_diagnostics = "diagnostic_id=p5.runtime.loop.failure; failure_reason=" +
                                  loop.failure_reason;
       return loop;
+    }
+    dt_s = ClampDtToTargetTime(config, time_s, dt_s);
+    if (!(dt_s > 0.0) || !std::isfinite(dt_s)) {
+      break;
     }
     loop.dt_estimator_wall_s += ElapsedSecondsSince(dt_timer);
 
@@ -2028,7 +2499,7 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
     }
 
     time_s += dt_s;
-    loop.steps_executed = static_cast<std::size_t>(step_index);
+    loop.steps_executed = static_cast<std::size_t>(local_step_index);
     loop.final_time_s = time_s;
     const auto wall_elapsed =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
@@ -2142,6 +2613,11 @@ void AppendRuntimeTimingDiagnostics(std::ostringstream& report,
          << "; runtime_stage_backend=mpi_hypre_callable_runtime"
          << "; runtime_steps_executed=" << loop.steps_executed
          << "; final_time_s=" << loop.final_time_s
+         << "; target_time_trigger_enabled="
+         << (TargetTimeEnabled(config) ? "true" : "false")
+         << "; target_time_s=" << config.run.target_time_s
+         << "; target_time_reached="
+         << (TargetTimeReached(config, loop.final_time_s) ? "true" : "false")
          << "; h_stage_executed=" << (stage_order.find('H') != std::string::npos ? "true" : "false")
          << "; t_stage_executed=" << (stage_order.find('T') != std::string::npos ? "true" : "false")
          << "; e_stage_executed=" << (stage_order.find('E') != std::string::npos ? "true" : "false")
@@ -2205,9 +2681,32 @@ Dec3DAppResult RunDec3DCommandLine(const std::vector<std::string>& argv) noexcep
                 init.failure_diagnostics);
   }
 
+  RuntimeStartPoint runtime_start;
+  bool restart_initialization_used = false;
+  std::string restart_report_line =
+      "diagnostic_id=p5.io.restart_load; restart_file_present=false";
+  if (!args.restart_path.empty()) {
+    const auto restart =
+        LoadRestartInitialState(args.restart_path, deck.config, init.group_layout);
+    if (!restart.success) {
+      return Fail(restart.failure_reason.empty() ? "restart load failed"
+                                                 : restart.failure_reason,
+                  restart.failure_diagnostics);
+    }
+    init.state = std::move(restart.state);
+    runtime_start.step = restart.step;
+    runtime_start.time_s = restart.time_s;
+    restart_initialization_used = true;
+    restart_report_line = restart.report_line;
+  }
+
 #ifdef DEC3D_ENABLE_HYPRE
   dec3d::io::RuntimeOutputWriteResult outputs;
-  if (!mpi_context.distributed || mpi_context.rank == 0) {
+  if (restart_initialization_used) {
+    outputs.success = true;
+    outputs.report_line =
+        "diagnostic_id=p5.io.runtime_output; initial_outputs_skipped_for_restart=true";
+  } else if (!mpi_context.distributed || mpi_context.rank == 0) {
     outputs = dec3d::io::WriteInitialRuntimeOutputs(
         deck.config,
         init.state,
@@ -2220,12 +2719,21 @@ Dec3DAppResult RunDec3DCommandLine(const std::vector<std::string>& argv) noexcep
         "diagnostic_id=p5.io.runtime_output; output_skipped_on_nonzero_mpi_rank=true";
   }
 #else
-  const auto outputs = dec3d::io::WriteInitialRuntimeOutputs(
-      deck.config,
-      init.state,
-      init.geometry,
-      init.group_layout,
-      args.profile_path);
+  const auto outputs =
+      restart_initialization_used
+          ? [] {
+              dec3d::io::RuntimeOutputWriteResult skipped;
+              skipped.success = true;
+              skipped.report_line =
+                  "diagnostic_id=p5.io.runtime_output; initial_outputs_skipped_for_restart=true";
+              return skipped;
+            }()
+          : dec3d::io::WriteInitialRuntimeOutputs(
+                deck.config,
+                init.state,
+                init.geometry,
+                init.group_layout,
+                args.profile_path);
 #endif
   if (!outputs.success) {
     return Fail(outputs.failure_reason.empty() ? "runtime output failed"
@@ -2243,14 +2751,16 @@ Dec3DAppResult RunDec3DCommandLine(const std::vector<std::string>& argv) noexcep
                 init.group_layout,
                 args.input_deck_path,
                 args.profile_path,
-                mpi_context)
+                mpi_context,
+                runtime_start)
           : ExecuteP5RuntimeLoop(
                 deck.config,
                 init.state,
                 init.geometry,
                 init.group_layout,
                 args.input_deck_path,
-                args.profile_path);
+                args.profile_path,
+                runtime_start);
 #else
   const auto loop = ExecuteP5RuntimeLoop(
       deck.config,
@@ -2258,7 +2768,8 @@ Dec3DAppResult RunDec3DCommandLine(const std::vector<std::string>& argv) noexcep
       init.geometry,
       init.group_layout,
       args.input_deck_path,
-      args.profile_path);
+      args.profile_path,
+      runtime_start);
 #endif
   if (!loop.success) {
     return Fail(loop.failure_reason.empty() ? "runtime loop failed" : loop.failure_reason,
@@ -2274,6 +2785,9 @@ Dec3DAppResult RunDec3DCommandLine(const std::vector<std::string>& argv) noexcep
          << "; profile_file_source=command_line.profile"
          << "; implicit_profile_used=false"
          << "; canonical_state_initialized=true"
+         << "; restart_initialization_used="
+         << (restart_initialization_used ? "true" : "false")
+         << "; " << restart_report_line
          << "; runtime_output_report_present=true"
          << "; dec3d_out_written=" << (outputs.dec3d_out_written ? "true" : "false")
          << "; field_checkpoint_written="

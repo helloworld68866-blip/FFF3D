@@ -64,6 +64,27 @@ Work in **small vertical slices**:
 4. prove runtime uses the new path
 5. then mark done
 
+For simple, low-risk tasks such as documentation edits, plotting-only changes, file organization, command output inspection, or small configuration tweaks, do not force the red-test/TDD workflow; handle the task directly and use only appropriately lightweight verification.
+
+## Efficiency optimization rules
+1. Use the `128x32x32` case as the primary efficiency optimization benchmark unless the user explicitly changes the benchmark.
+2. Keep the benchmark protocol fixed when comparing performance: same MPI rank count, Release build, input profile, radiation groups, output settings, step count, machine state, and command line.
+3. Separate initialization cost from per-step cost. Track `init_wall_s`, first-step wall time, and steady per-step wall time independently.
+4. Optimize the most expensive stage first. Within a stage, start from the most expensive measured sub-step.
+5. Optimize one bottleneck at a time. Do not mix unrelated hydro, thermal, radiation, alpha, I/O, or initialization changes in the same optimization slice unless the coupling is proven necessary.
+6. Before changing a target sub-step, write down its theoretical efficiency limit. Analyze the limit in three layers:
+   - algorithmic lower bound: required cell visits, stencil operations, reductions, halo exchanges, solver iterations, and I/O;
+   - hardware lower bound: memory bandwidth, FLOP throughput, MPI latency/bandwidth, and cache behavior;
+   - engineering lower bound: best likely result without large unrelated rewrites.
+7. For a numeric operation such as `c = a + b`, estimate the ideal operation count and memory traffic first, then explain why the current implementation misses that limit before optimizing it.
+8. Classify every bottleneck as compute-bound, memory-bound, communication-bound, synchronization-bound, solver-bound, allocation-bound, or I/O-bound before choosing an optimization.
+9. Every optimization must pass a numerical consistency gate. Compare key diagnostics such as density, pressure, velocity, electron/ion temperature, total energy where available, history profiles, and relevant norms. Efficiency changes must not change physics except for justified floating-point roundoff.
+10. Use repeated measurements for timing-sensitive conclusions. Prefer at least two to three short probes and report mean and spread when practical.
+11. Record Amdahl's-law impact before optimizing a sub-step: sub-step fraction of total time, best possible local speedup, and maximum possible end-to-end speedup.
+12. Use clear stop conditions. Stop optimizing a sub-step when it is no longer a dominant cost, additional speedup is below measurement noise or about 5 percent end-to-end, the implementation is within roughly 2x of the justified practical limit, or further work requires a larger approved redesign.
+13. Document every optimization in `optimize.md`, including target step, baseline time, theoretical limit, bottleneck diagnosis, implementation technique, changed files, verification command, new timing, speedup, numerical differences, and next bottleneck.
+14. Do not make case-aware optimizations. The `128x32x32` case is a benchmark, not a license to special-case a grid, profile, mode, output directory, or input deck.
+
 ## Forbidden shortcuts
 - delegating execution to old code
 - placeholder kernels presented as final

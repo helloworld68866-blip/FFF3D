@@ -77,6 +77,23 @@ struct StaticGridHydroResult {
   dec3d::mesh::SphericalGeometryMetadata macro_ale_hllc_staged_geometry;
   MacroAleHllcDiagnostics macro_ale_hllc_diagnostics;
   MacroAleHllcLocalFaceWindow macro_ale_hllc_local_face_window;
+  double timing_snapshot_wall_s{0.0};
+  double timing_scratch_wall_s{0.0};
+  double timing_radial_sweep_wall_s{0.0};
+  double timing_macro_detect_wall_s{0.0};
+  double timing_macro_restrict_wall_s{0.0};
+  double timing_macro_update_wall_s{0.0};
+  double timing_macro_radial_update_wall_s{0.0};
+  double timing_macro_theta_update_wall_s{0.0};
+  double timing_macro_phi_update_wall_s{0.0};
+  double timing_macro_state_update_wall_s{0.0};
+  double timing_macro_prolong_wall_s{0.0};
+  double timing_theta_sweep_wall_s{0.0};
+  double timing_phi_sweep_wall_s{0.0};
+  double timing_commit_wall_s{0.0};
+  double timing_source_wall_s{0.0};
+  double timing_budget_wall_s{0.0};
+  double timing_diagnostics_wall_s{0.0};
   std::string failure_reason;
   std::string report_line;
 

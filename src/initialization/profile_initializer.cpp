@@ -5,7 +5,6 @@
 #include "radiation/providers/group_blackbody.hpp"
 #include "state/thermodynamics/thermodynamic_recovery.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <sstream>
@@ -43,6 +42,7 @@ ProfileInitializationResult Fail(std::string reason) {
     const std::filesystem::path& profile_path,
     std::size_t group_count,
     bool blackbody_executed,
+    double perturbation_reference_velocity_cm_s,
     const std::string& thermodynamic_report) {
   std::ostringstream out;
   out << std::setprecision(17);
@@ -58,8 +58,17 @@ ProfileInitializationResult Fail(std::string reason) {
         << "; initial_perturbation_l=" << config.perturbation.ell
         << "; initial_perturbation_m=" << config.perturbation.m
         << "; initial_perturbation_amplitude=" << config.perturbation.amplitude
+        << "; initial_perturbation_r0_cm=" << config.perturbation.r0_cm
         << "; initial_perturbation_target=" << config.perturbation.target
-        << "; initial_perturbation_formula=radial_coordinate_divided_by_1_plus_a_Pl_costheta";
+        << "; initial_perturbation_reference_velocity_cm_s="
+        << perturbation_reference_velocity_cm_s
+        << "; initial_perturbation_reference_velocity_source=profile_at_r0"
+        << "; initial_perturbation_shape_function=woo_thesis_eq_2_2"
+        << "; initial_perturbation_shape_width_fraction=0.015"
+        << "; initial_perturbation_formula=vr_plus_amplitude_abs_vr_r0_f_r_Pl_costheta"
+        << "; perturbation_applied_to=v_r"
+        << "; density_angular_perturbation=false"
+        << "; temperature_angular_perturbation=false";
   }
   out
       << "; canonical_state_initialized=true"
@@ -121,40 +130,37 @@ ProfileInitializationResult Fail(std::string reason) {
   return p_l_minus_one;
 }
 
-[[nodiscard]] std::vector<double> NormalizedAxisymmetricSingleMode(
+[[nodiscard]] std::vector<double> AxisymmetricSingleMode(
     const dec3d::io::InputDeckConfig& config,
     const dec3d::mesh::SphericalGeometryMetadata& geometry) {
   std::vector<double> pattern(config.mesh.theta_cells, 1.0);
   if (!config.perturbation.enabled) {
     return pattern;
   }
-  double max_abs = 0.0;
   for (std::size_t t = 0u; t < pattern.size(); ++t) {
     const double theta = 0.5 * (geometry.theta_faces[t] + geometry.theta_faces[t + 1u]);
     pattern[t] = LegendreP(config.perturbation.ell, std::cos(theta));
-    max_abs = std::max(max_abs, std::abs(pattern[t]));
-  }
-  if (!(max_abs > 0.0) || !std::isfinite(max_abs)) {
-    std::fill(pattern.begin(), pattern.end(), 0.0);
-    return pattern;
-  }
-  for (double& value : pattern) {
-    value /= max_abs;
   }
   return pattern;
 }
 
-[[nodiscard]] double PerturbedSampleRadius(
+[[nodiscard]] double WooVelocityPerturbationShape(
     const dec3d::io::InputDeckConfig& config,
-    const std::vector<double>& theta_pattern,
-    double radius,
-    std::size_t theta_index) noexcept {
-  if (!config.perturbation.enabled) {
-    return radius;
+    double radius_cm) noexcept {
+  if (!config.perturbation.enabled ||
+      config.perturbation.ell <= 0 ||
+      !(radius_cm > 0.0) ||
+      !(config.perturbation.r0_cm > 0.0)) {
+    return 0.0;
   }
-  const double scale =
-      std::max(1.0 + config.perturbation.amplitude * theta_pattern[theta_index], 1.0e-6);
-  return radius / scale;
+  const double width = 0.015 * config.perturbation.r0_cm;
+  const double transition = std::tanh((radius_cm - config.perturbation.r0_cm) / width);
+  const double inner = std::pow(radius_cm / config.perturbation.r0_cm,
+                                config.perturbation.ell);
+  const double outer = std::pow(config.perturbation.r0_cm / radius_cm,
+                                config.perturbation.ell);
+  return 0.5 * inner * (1.0 - transition) +
+         0.5 * outer * (1.0 + transition);
 }
 
 }  // namespace
@@ -198,13 +204,26 @@ ProfileInitializationResult InitializeFromRadialProfile(
   const double mean_ion_mass = dec3d::physics::DefaultMeanDTIonMassG();
   const double zbar = dec3d::physics::DefaultZbar();
   const double gamma_minus_one = 2.0 / 3.0;
-  const auto theta_pattern = NormalizedAxisymmetricSingleMode(config, geometry);
+  const auto theta_pattern = AxisymmetricSingleMode(config, geometry);
+  double perturbation_reference_velocity_cm_s = 0.0;
+  if (config.perturbation.enabled) {
+    const auto reference_sample =
+        dec3d::io::SampleRadialProfile(profile, config.perturbation.r0_cm);
+    if (!reference_sample.success) {
+      return Fail(reference_sample.failure_reason);
+    }
+    perturbation_reference_velocity_cm_s = reference_sample.value.vr_cm_s;
+    if (!std::isfinite(perturbation_reference_velocity_cm_s) ||
+        (config.perturbation.amplitude > 0.0 &&
+         !(std::abs(perturbation_reference_velocity_cm_s) > 0.0))) {
+      return Fail("perturbation reference velocity must be finite and nonzero");
+    }
+  }
 
   for (std::size_t r = 0u; r < layout.radial_cells; ++r) {
     const double radius = 0.5 * (geometry.radial_faces[r] + geometry.radial_faces[r + 1u]);
     for (std::size_t t = 0u; t < layout.theta_cells; ++t) {
-      const auto sample = dec3d::io::SampleRadialProfile(
-          profile, PerturbedSampleRadius(config, theta_pattern, radius, t));
+      const auto sample = dec3d::io::SampleRadialProfile(profile, radius);
       if (!sample.success) {
         return Fail(sample.failure_reason);
       }
@@ -215,17 +234,24 @@ ProfileInitializationResult InitializeFromRadialProfile(
         return Fail("profile temperature conversion failed");
       }
       for (std::size_t p = 0u; p < layout.phi_cells; ++p) {
+        const double delta_vr =
+            config.perturbation.enabled
+                ? config.perturbation.amplitude *
+                      std::abs(perturbation_reference_velocity_cm_s) *
+                      WooVelocityPerturbationShape(config, radius) * theta_pattern[t]
+                : 0.0;
+        const double vr_cm_s = row.vr_cm_s + delta_vr;
         const double ni = row.rho_g_cm3 / mean_ion_mass;
         const double ne = zbar * ni;
         const double electron = ne * te_erg / gamma_minus_one;
         const double ion = ni * ti_erg / gamma_minus_one;
         const double kinetic = 0.5 * row.rho_g_cm3 *
-                               (row.vr_cm_s * row.vr_cm_s +
+                               (vr_cm_s * vr_cm_s +
                                 row.vt_cm_s * row.vt_cm_s +
                                 row.vp_cm_s * row.vp_cm_s);
 
         state.rho(r, t, p) = row.rho_g_cm3;
-        state.mom_r(r, t, p) = row.rho_g_cm3 * row.vr_cm_s;
+        state.mom_r(r, t, p) = row.rho_g_cm3 * vr_cm_s;
         state.mom_theta(r, t, p) = row.rho_g_cm3 * row.vt_cm_s;
         state.mom_phi(r, t, p) = row.rho_g_cm3 * row.vp_cm_s;
         state.e_electron(r, t, p) = electron;
@@ -274,7 +300,12 @@ ProfileInitializationResult InitializeFromRadialProfile(
   result.group_layout = group_layout;
   result.thermodynamic_recovery_report = recovery.recovery_diagnostics;
   result.report_line =
-      BuildReport(config, profile_path, group_count, blackbody_executed, recovery.recovery_diagnostics);
+      BuildReport(config,
+                  profile_path,
+                  group_count,
+                  blackbody_executed,
+                  perturbation_reference_velocity_cm_s,
+                  recovery.recovery_diagnostics);
   return result;
 }
 

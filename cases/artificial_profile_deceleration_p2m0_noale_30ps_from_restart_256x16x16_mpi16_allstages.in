@@ -1,0 +1,85 @@
+# artificial_profile_deceleration_p2m0_noale_30ps_from_restart_256x16x16_mpi16_allstages.in
+[run]
+case_name = artificial_profile_deceleration_p2m0_noale_30ps_from_restart_256x16x16_mpi16_allstages
+phase = P5
+stage_order = H,T,E,R,A
+step_count = 200000
+target_time_s = 3.0e-11
+dt_mode = hydro_relaxed
+cfl = 0.50
+output_dir = F:/dec3d/analysis/output/artificial_profile_deceleration_p2m0_noale_10ps_256x16x16_mpi16_allstages
+
+[mesh]
+geometry = spherical
+radial_cells = 256
+theta_cells = 16
+phi_cells = 16
+radial_min_cm = 0.0
+radial_max_cm = 0.0115
+theta_min = 0.0
+theta_max = 3.141592653589793
+phi_min = 0.0
+phi_max = 6.283185307179586
+moving_mesh = false
+macro_zoning = true
+
+[initial_condition]
+profile_interpolation = linear
+profile_radius_unit = um
+outside_profile_policy = hard_fail
+
+[perturbation]
+enabled = true
+type = single_mode_radial_velocity
+ell = 2
+m = 0
+amplitude = 0.07
+r0_cm = 6.8e-3
+target = radial_velocity_cm_s
+
+[physics]
+enable_hydro = true
+enable_thermal = true
+enable_equilibration = true
+enable_radiation = true
+enable_alpha = true
+
+[radiation]
+group_mode = explicit_frequency_groups
+group_edges_eV = 1,3,10,30,100,300,1000,3000,10000,30000,100000
+opacity_provider = tops_dt_tabulated
+radiation_initialization = local_blackbody
+radiation_initial_blackbody_scale = 1.0
+boundary_model = thesis_marshak_vacuum
+flux_limiter = harmonic_eq_5_209
+
+[thermal]
+kappa_model = lee_more_with_degeneracy
+electron_flux_limiter = minmax_old_time_face_effective_kappa
+
+[alpha]
+composition_model = equimolar_dt_from_p2_recovery
+reactivity_model = bosch_hale_dt
+alpha_initialization = zero
+
+[boundaries]
+inner_radial = scalar_origin_remap_required
+outer_radial = neumann_zero_flux
+theta = scalar_pole_remap_required
+phi = periodic
+
+[output]
+write_profiles_every = 0
+write_diagnostics_every = 0
+write_restart_every = 0
+write_dec3d_out_every_steps = 1
+field_checkpoint_every_steps = 0
+field_checkpoint_interval_s = 1.0e-12
+field_checkpoint_prefix = fields
+field_checkpoint_format = csv3d
+restart_checkpoint_every_steps = 0
+restart_checkpoint_interval_s = 5.0e-12
+restart_checkpoint_prefix = restart
+restart_checkpoint_format = dec3d_restart_text
+history_profile_interval_s = 1.0e-13
+history_profile_file = artificial_profile_deceleration_p2m0_noale_10ps_256x16x16_mpi16_allstages.his

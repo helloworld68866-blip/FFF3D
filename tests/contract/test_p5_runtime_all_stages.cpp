@@ -44,7 +44,8 @@ int main() {
 case_name = p5_runtime_all_stages # name
 phase = P5 # phase
 stage_order = H,T,E,R,A # full stage chain
-step_count = 1 # one real runtime step
+step_count = 3 # physical target stops before this upper step cap
+target_time_s = 1.0e-20 # clamp final dt to hit this physical stop time
 dt_mode = hydro_relaxed # hydro CFL dt
 cfl = 0.4 # CFL
 output_dir = OUTPUT_ROOT_REPLACED # output dir
@@ -129,15 +130,39 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
   assert(result.report_line.find("runtime_time_loop_executed=true") != std::string::npos);
   assert(result.report_line.find("runtime_stage_order_executed=H,T,E,R,A") != std::string::npos);
   assert(result.report_line.find("runtime_steps_executed=1") != std::string::npos);
+  assert(result.report_line.find("target_time_s=") != std::string::npos);
+  assert(result.report_line.find("target_time_reached=true") != std::string::npos);
   assert(result.report_line.find("h_stage_executed=true") != std::string::npos);
   assert(result.report_line.find("t_stage_executed=true") != std::string::npos);
   assert(result.report_line.find("e_stage_executed=true") != std::string::npos);
   assert(result.report_line.find("r_stage_executed=true") != std::string::npos);
   assert(result.report_line.find("a_stage_executed=true") != std::string::npos);
+  const std::vector<std::string> hydro_timing_keys{
+      "h_hydro_snapshot_wall_s=",
+      "h_hydro_scratch_wall_s=",
+      "h_hydro_radial_sweep_wall_s=",
+      "h_hydro_macro_detect_wall_s=",
+      "h_hydro_macro_restrict_wall_s=",
+      "h_hydro_macro_update_wall_s=",
+      "h_hydro_macro_radial_update_wall_s=",
+      "h_hydro_macro_theta_update_wall_s=",
+      "h_hydro_macro_phi_update_wall_s=",
+      "h_hydro_macro_state_update_wall_s=",
+      "h_hydro_macro_prolong_wall_s=",
+      "h_hydro_theta_sweep_wall_s=",
+      "h_hydro_phi_sweep_wall_s=",
+      "h_hydro_commit_wall_s=",
+      "h_hydro_source_wall_s=",
+      "h_hydro_budget_wall_s=",
+      "h_hydro_diagnostics_wall_s="};
+  for (const auto& key : hydro_timing_keys) {
+    DEC3D_CHECK(result.report_line.find(key) != std::string::npos);
+  }
 
   assert(std::filesystem::exists(output / "dec3d.out"));
   assert(std::filesystem::exists(output / "fields_000000.snap"));
   assert(std::filesystem::exists(output / "fields_000001.snap"));
+  assert(!std::filesystem::exists(output / "fields_000002.snap"));
   assert(!std::filesystem::exists(output / "restart_000000.snap"));
   assert(!std::filesystem::exists(output / "restart_000001.snap"));
 
@@ -251,6 +276,9 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
       noh_profile.string()};
   const auto noh_result = dec3d::app::RunDec3DCommandLine(noh_argv);
   DEC3D_CHECK(noh_result.exit_code == 0);
+  for (const auto& key : hydro_timing_keys) {
+    DEC3D_CHECK(noh_result.report_line.find(key) != std::string::npos);
+  }
 
   std::filesystem::remove_all(root);
   return 0;
