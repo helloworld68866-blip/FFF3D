@@ -63,6 +63,7 @@ ProfileInitializationResult Fail(std::string reason) {
         << "; initial_perturbation_reference_velocity_cm_s="
         << perturbation_reference_velocity_cm_s
         << "; initial_perturbation_reference_velocity_source=profile_at_r0"
+        << "; initial_perturbation_normalization=raw_Pl"
         << "; initial_perturbation_shape_function=woo_thesis_eq_2_2"
         << "; initial_perturbation_shape_width_fraction=0.015"
         << "; initial_perturbation_formula=vr_plus_amplitude_abs_vr_r0_f_r_Pl_costheta"
@@ -72,6 +73,8 @@ ProfileInitializationResult Fail(std::string reason) {
   }
   out
       << "; canonical_state_initialized=true"
+      << "; axisymmetric_mom_phi_zero="
+      << (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) ? "true" : "not_applicable")
       << "; rho_positive=true"
       << "; e_electron_positive=true"
       << "; e_ion_positive=true"
@@ -228,6 +231,10 @@ ProfileInitializationResult InitializeFromRadialProfile(
         return Fail(sample.failure_reason);
       }
       const auto& row = sample.value;
+      if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) &&
+          std::abs(row.vp_cm_s) > 1.0e-30) {
+        return Fail("axisymmetric_2d requires zero vp_cm_s");
+      }
       const double te_erg = dec3d::physics::ErgFromKeV(row.Te_keV);
       const double ti_erg = dec3d::physics::ErgFromKeV(row.Ti_keV);
       if (!(te_erg > 0.0) || !(ti_erg > 0.0)) {
@@ -319,6 +326,7 @@ bool ValidateProfileInitializationDiagnostics(
          Contains(line, "profile_file_source=command_line.profile") &&
          Contains(line, "implicit_profile_used=false") &&
          Contains(line, "canonical_state_initialized=true") &&
+         Contains(line, "axisymmetric_mom_phi_zero=") &&
          Contains(line, "rho_positive=true") &&
          Contains(line, "e_electron_positive=true") &&
          Contains(line, "e_ion_positive=true") &&

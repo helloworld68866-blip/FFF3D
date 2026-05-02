@@ -287,6 +287,42 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
               p2_init.state.e_electron(1u, 1u, 0u));
   DEC3D_CHECK(p2_init.state.mom_r(0u, 0u, 0u) > p2_init.state.mom_r(0u, 1u, 0u));
 
+  {
+    auto config = p2_deck.config;
+    config.mesh.dimensionality = dec3d::io::MeshDimensionality::axisymmetric_2d;
+    config.mesh.phi_cells = 1u;
+    config.mesh.moving_mesh = false;
+    const auto result = dec3d::initialization::InitializeFromRadialProfile(
+        config, p2_profile.profile, profile_path);
+    DEC3D_CHECK(result.success);
+    DEC3D_CHECK(result.report_line.find("initial_perturbation_normalization=raw_Pl") !=
+                std::string::npos);
+    DEC3D_CHECK(result.report_line.find("axisymmetric_mom_phi_zero=true") !=
+                std::string::npos);
+    DEC3D_CHECK(result.state.layout.phi_cells == 1u);
+    for (std::size_t r = 0; r < result.state.layout.radial_cells; ++r) {
+      for (std::size_t t = 0; t < result.state.layout.theta_cells; ++t) {
+        DEC3D_CHECK(result.state.mom_phi(r, t, 0u) == 0.0);
+      }
+    }
+  }
+
+  {
+    auto config = p2_deck.config;
+    config.mesh.dimensionality = dec3d::io::MeshDimensionality::axisymmetric_2d;
+    config.mesh.phi_cells = 1u;
+    config.mesh.moving_mesh = false;
+    auto profile_with_vp = p2_profile.profile;
+    for (auto& row : profile_with_vp.rows) {
+      row.vp_cm_s = 1.0e5;
+    }
+    const auto result = dec3d::initialization::InitializeFromRadialProfile(
+        config, profile_with_vp, profile_path);
+    DEC3D_CHECK(!result.success);
+    DEC3D_CHECK(result.failure_reason.find("axisymmetric_2d requires zero vp_cm_s") !=
+                std::string::npos);
+  }
+
   auto old_coordinate_deck = p2_velocity_deck;
   const std::string velocity_type = "type = single_mode_radial_velocity";
   const auto velocity_type_pos = old_coordinate_deck.find(velocity_type);
