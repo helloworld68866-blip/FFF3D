@@ -15,14 +15,14 @@
 Modify these files:
 
 - `src/io/input_deck.hpp`: add mesh dimensionality enum and axisymmetric query helpers.
-- `src/io/input_deck.cpp`: parse `mesh.dimensionality`, validate `phi_cells=1`, reject ALE/moving mesh and `m!=0`, and report axisymmetric diagnostics.
+- `src/io/input_deck.cpp`: parse `mesh.dimensionality`, validate `phi_cells=1` and full angular ranges, reject ALE/moving mesh and `m!=0`, and report `phi_sweep_configured`.
 - `tests/contract/test_p5_io_input_deck.cpp`: add parser acceptance/rejection coverage.
 - `tests/contract/test_spherical_geometry.cpp`: add `phi_cells=1` full-volume and outer radial surface area tests with a local face-area helper.
 - `src/mesh/boundary/spherical_scalar_remap.cpp`: allow half-turn topology for `phi_cells=1` and map half-turn to phi `0`.
 - `src/hydro/driver/theta_pole_boundary.cpp`: allow `MapPhiAcrossPole(phi, 1)` to return `0`.
 - `src/hydro/driver/hydro_boundary_ghosts.cpp`: allow origin and pole ghost fills with `phi_cells=1`.
 - `tests/contract/test_spherical_scalar_remap.cpp`, `tests/contract/test_hydro_theta_pole_boundary.cpp`, `tests/contract/test_hydro_origin_radial_ghost_remap.cpp`: add remap and parity tests.
-- `src/transport/diffusion/generic_diffusion.hpp/.cpp`: add matrix diagnostics for phi coupling count, duplicate columns, and interior row width; preserve existing `phi_cells<=1` skip.
+- `src/transport/diffusion/generic_diffusion.hpp/.cpp`: add matrix diagnostics for phi coupling count, pre-CSR phi self-neighbor attempts, duplicate columns, and interior row width; preserve existing `phi_cells<=1` skip.
 - `src/transport/diffusion/hypre_distributed_diffusion_solver.hpp/.cpp`: add the same distributed diagnostics and tests for no phi self-neighbor.
 - `tests/contract/test_generic_implicit_diffusion.cpp`, `tests/contract/test_hypre_distributed_diffusion_solver.cpp`: add serial and distributed axisymmetric matrix tests.
 - `src/initialization/profile_initializer.cpp`: report perturbation normalization as raw Legendre `P_l`, and fail axisymmetric mode if profile initializes nonzero `mom_phi`.
@@ -32,7 +32,8 @@ Modify these files:
 - `src/hydro/driver/static_grid_hydro.cpp`: preserve the existing zero phi-sweep timing path and expose `phi_sweep_executed=false` through the runtime report.
 - `tests/contract/test_p5_runtime_all_stages.cpp`: add a serial H-only no-ALE smoke case that verifies hydro direction diagnostics.
 - `tests/contract/test_p5_runtime_distributed_all_stages.cpp`: add HYPRE no-ALE all-stage axisymmetric smoke using the existing MPI app-command helper pattern.
-- `tests/contract/test_axisymmetric_2d_regression.cpp`: create a focused 2D-vs-3D m=0 structural regression and vector diagnostic test.
+- `src/state/diagnostics/axisymmetric_vector_diagnostics.hpp`: add production Cartesian momentum reducers for analytic axisymmetric and numeric full-3D integration.
+- `tests/contract/test_axisymmetric_2d_regression.cpp`: create a focused 2D-vs-3D m=0 structural regression and production vector diagnostic test.
 - `CMakeLists.txt`: register `dec3d_contract_axisymmetric_2d_regression`.
 - `cases/axisymmetric_2d_noale_allstages_smoke.in`: create a tiny all-stage input deck.
 - `cases/axisymmetric_2d_noale_smoke.pro`: create a tiny profile file.
@@ -43,6 +44,80 @@ Do not modify:
 - ALE implementation files except for input validation rejecting axisymmetric ALE.
 - Physics equations, opacity interpolation, alpha source, solver tolerances, or radiation group logic.
 - Output formats beyond metadata/diagnostics needed for safety.
+
+---
+
+## Task 0: Preflight
+
+**Files:**
+- Inspect only.
+
+- [ ] **Step 1: Verify branch and clean starting point**
+
+Run:
+
+```powershell
+git -C 'F:\dec3d' status --short --branch
+```
+
+Expected:
+
+- branch is `codex/axisymmetric-2d`;
+- branch is not `main`;
+- no unrelated local edits are present. If unrelated edits are present, do not revert them; record them in the task notes and avoid touching those files.
+
+- [ ] **Step 2: Verify HYPRE build configuration**
+
+Run:
+
+```powershell
+Test-Path 'F:\dec3d\build-hypre\CMakeCache.txt'
+Select-String -Path 'F:\dec3d\build-hypre\CMakeCache.txt' -Pattern 'DEC3D_ENABLE_HYPRE:BOOL=ON'
+```
+
+Expected: first command prints `True`; second command prints the matching cache line.
+
+- [ ] **Step 3: Verify Microsoft MPI launcher**
+
+Run:
+
+```powershell
+Test-Path 'C:\Program Files\Microsoft MPI\Bin\mpiexec.exe'
+```
+
+Expected: prints `True`.
+
+- [ ] **Step 4: Verify TOPS opacity fixture**
+
+Runtime radiation finds TOPS tables by searching for `data/opacities/tops_dt_2026_04_27` from the current path, its parent, and the input deck path ancestry. Verify the fixture exists:
+
+```powershell
+Test-Path 'F:\dec3d\data\opacities\tops_dt_2026_04_27\metadata.json'
+Test-Path 'F:\dec3d\data\opacities\tops_dt_2026_04_27\multigroup_opacities.csv'
+```
+
+Expected: both commands print `True`. If either command prints `False`, do not run all-stage radiation smoke; mark the all-stage smoke blocked by `TOPS opacity fixture missing` and continue only through H-only tests.
+
+- [ ] **Step 5: Run current baseline focused tests**
+
+Run before modifying code:
+
+```powershell
+cmake --build 'F:\dec3d\build-hypre' --config Release --target dec3d_contract_p5_io_input_deck dec3d_contract_spherical_geometry dec3d_contract_spherical_scalar_remap dec3d_contract_hydro_theta_pole_boundary dec3d_contract_hydro_origin_radial_ghost_remap dec3d_contract_generic_implicit_diffusion dec3d_contract_hypre_distributed_diffusion_solver dec3d_contract_p5_io_profile_initializer dec3d_contract_p5_runtime_all_stages dec3d_contract_p5_runtime_distributed_all_stages dec3d_contract_p5_io_checkpoint_files --clean-first -- /m
+& 'F:\dec3d\build-hypre\Release\dec3d_contract_p5_io_input_deck.exe'
+& 'F:\dec3d\build-hypre\Release\dec3d_contract_spherical_geometry.exe'
+& 'F:\dec3d\build-hypre\Release\dec3d_contract_spherical_scalar_remap.exe'
+& 'F:\dec3d\build-hypre\Release\dec3d_contract_hydro_theta_pole_boundary.exe'
+& 'F:\dec3d\build-hypre\Release\dec3d_contract_hydro_origin_radial_ghost_remap.exe'
+& 'F:\dec3d\build-hypre\Release\dec3d_contract_generic_implicit_diffusion.exe'
+& 'C:\Program Files\Microsoft MPI\Bin\mpiexec.exe' -n 2 'F:\dec3d\build-hypre\Release\dec3d_contract_hypre_distributed_diffusion_solver.exe'
+& 'F:\dec3d\build-hypre\Release\dec3d_contract_p5_io_profile_initializer.exe'
+& 'F:\dec3d\build-hypre\Release\dec3d_contract_p5_runtime_all_stages.exe'
+& 'C:\Program Files\Microsoft MPI\Bin\mpiexec.exe' -n 2 'F:\dec3d\build-hypre\Release\dec3d_contract_p5_runtime_distributed_all_stages.exe'
+& 'F:\dec3d\build-hypre\Release\dec3d_contract_p5_io_checkpoint_files.exe'
+```
+
+Expected: every command exits `0`. Record any baseline failure before starting Task 1; do not treat existing baseline failures as axisymmetric implementation failures.
 
 ---
 
@@ -92,6 +167,8 @@ Add test blocks before cleanup:
   DEC3D_CHECK(deck.report_line.find("mesh_dimensionality=axisymmetric_2d") !=
               std::string::npos);
   DEC3D_CHECK(deck.report_line.find("azimuthal_weight=2pi") != std::string::npos);
+  DEC3D_CHECK(deck.report_line.find("phi_sweep_configured=false") !=
+              std::string::npos);
 }
 
 {
@@ -133,7 +210,20 @@ target = radial_velocity_cm_s
   WriteText(bad_m_path, deck_text);
   const auto deck = dec3d::io::LoadInputDeck(bad_m_path);
   DEC3D_CHECK(!deck.success);
-  DEC3D_CHECK(deck.failure_reason.find("axisymmetric_2d only supports m = 0") !=
+  DEC3D_CHECK(deck.failure_reason.find(
+                  "axisymmetric_2d only supports m = 0 perturbations") !=
+              std::string::npos);
+}
+
+{
+  const auto bad_phi_range_path = root / "axisymmetric_2d_bad_phi_range.in";
+  WriteText(bad_phi_range_path,
+            ReplaceAll(AxisymmetricDeckText(), "phi_max = 6.283185307179586 # phi max",
+                       "phi_max = 3.141592653589793 # phi max"));
+  const auto deck = dec3d::io::LoadInputDeck(bad_phi_range_path);
+  DEC3D_CHECK(!deck.success);
+  DEC3D_CHECK(deck.failure_reason.find(
+                  "axisymmetric_2d requires full theta and phi ranges") !=
               std::string::npos);
 }
 
@@ -241,12 +331,20 @@ if (IsAxisymmetric2D(cfg.mesh.dimensionality)) {
   if (cfg.mesh.moving_mesh) {
     return FailDeck("axisymmetric_2d requires moving_mesh=false");
   }
+  constexpr double kPi = 3.141592653589793238462643383279502884;
+  constexpr double kRangeTol = 1.0e-12;
+  if (std::abs(cfg.mesh.theta_min - 0.0) > kRangeTol ||
+      std::abs(cfg.mesh.theta_max - kPi) > kRangeTol ||
+      std::abs(cfg.mesh.phi_min - 0.0) > kRangeTol ||
+      std::abs(cfg.mesh.phi_max - 2.0 * kPi) > kRangeTol) {
+    return FailDeck("axisymmetric_2d requires full theta and phi ranges");
+  }
 } else if (cfg.mesh.phi_cells == 0u || (cfg.mesh.phi_cells % 2u) != 0u) {
   return FailDeck("full_3d requires positive even phi_cells");
 }
 ```
 
-After perturbation parsing, add:
+Inside the existing `if (perturbation) { ... }` block, after `m` has been parsed and before the current generic `unsupported perturbation option` rejection, add the axisymmetric-specific rejection first:
 
 ```cpp
 if (IsAxisymmetric2D(cfg.mesh.dimensionality) &&
@@ -264,7 +362,7 @@ In `BuildDeckReport`, add after geometry/mesh fields are available:
 << (IsAxisymmetric2D(config.mesh.dimensionality) ? "r,theta" : "r,theta,phi")
 << "; azimuthal_weight="
 << (IsAxisymmetric2D(config.mesh.dimensionality) ? "2pi" : "mesh_phi_faces")
-<< "; phi_sweep_requested="
+<< "; phi_sweep_configured="
 << (IsAxisymmetric2D(config.mesh.dimensionality) ? "false" : "true")
 ```
 
@@ -546,9 +644,18 @@ Add test block:
   DEC3D_CHECK(assembly.success);
   DEC3D_CHECK_EQ(assembly.row_count, std::size_t{16});
   DEC3D_CHECK_EQ(assembly.phi_coupling_count, std::size_t{0});
+  DEC3D_CHECK(!assembly.phi_neighbor_loop_executed);
+  DEC3D_CHECK_EQ(assembly.phi_self_neighbor_attempt_count, std::size_t{0});
   DEC3D_CHECK_EQ(assembly.duplicate_column_row_count, std::size_t{0});
+  DEC3D_CHECK_EQ(assembly.interior_row_width5_count, std::size_t{4});
   DEC3D_CHECK(assembly.report_line.find("phi_coupling_count=0") != std::string::npos);
+  DEC3D_CHECK(assembly.report_line.find("phi_neighbor_loop_executed=false") !=
+              std::string::npos);
+  DEC3D_CHECK(assembly.report_line.find("phi_self_neighbor_attempt_count=0") !=
+              std::string::npos);
   DEC3D_CHECK(assembly.report_line.find("duplicate_column_row_count=0") !=
+              std::string::npos);
+  DEC3D_CHECK(assembly.report_line.find("axisymmetric_interior_row_width5_count=4") !=
               std::string::npos);
   const std::size_t interior_row = TestLinearIndex(layout, 1u, 1u, 0u);
   DEC3D_CHECK_EQ(assembly.matrix.row_offsets[interior_row + 1u] -
@@ -592,7 +699,9 @@ Add after the row ownership test:
   DEC3D_CHECK(assembly.success);
   DEC3D_CHECK_EQ(assembly.ownership.global_row_count, std::size_t{16});
   DEC3D_CHECK_EQ(assembly.global_phi_coupling_count, std::size_t{0});
+  DEC3D_CHECK_EQ(assembly.global_phi_self_neighbor_attempt_count, std::size_t{0});
   DEC3D_CHECK_EQ(assembly.global_duplicate_column_row_count, std::size_t{0});
+  DEC3D_CHECK_EQ(assembly.global_axisymmetric_interior_row_width5_count, std::size_t{4});
   for (std::size_t local_row = 0; local_row < assembly.ownership.local_row_count; ++local_row) {
     DEC3D_CHECK(!LocalRowHasDuplicateColumns(assembly.local_matrix, local_row));
     const std::size_t global_row = assembly.ownership.local_row_begin + local_row;
@@ -605,6 +714,11 @@ Add after the row ownership test:
     }
   }
   DEC3D_CHECK(assembly.report_line.find("global_phi_coupling_count=0") !=
+              std::string::npos);
+  DEC3D_CHECK(assembly.report_line.find("global_phi_self_neighbor_attempt_count=0") !=
+              std::string::npos);
+  DEC3D_CHECK(assembly.report_line.find(
+                  "global_axisymmetric_interior_row_width5_count=4") !=
               std::string::npos);
 }
 ```
@@ -625,6 +739,8 @@ Add fields to `GenericDiffusionAssemblyResult`:
 
 ```cpp
 std::size_t phi_coupling_count{0};
+bool phi_neighbor_loop_executed{false};
+std::size_t phi_self_neighbor_attempt_count{0};
 std::size_t duplicate_column_row_count{0};
 std::size_t interior_row_width5_count{0};
 ```
@@ -638,7 +754,12 @@ void AddPhiConductance(
     std::size_t right,
     double conductance,
     GenericDiffusionAssemblyResult& result) {
-  if (left == right || conductance == 0.0) {
+  result.phi_neighbor_loop_executed = true;
+  if (left == right) {
+    ++result.phi_self_neighbor_attempt_count;
+    return;
+  }
+  if (conductance == 0.0) {
     return;
   }
   ++result.phi_coupling_count;
@@ -648,7 +769,7 @@ void AddPhiConductance(
 
 Use `AddPhiConductance` only in the phi loop. Keep the existing `if (layout.phi_cells <= 1u) return;`.
 
-After `BuildCsrMatrix`, compute duplicate rows:
+After `BuildCsrMatrix`, compute duplicate rows and axisymmetric interior row width. The duplicate-column check is intentionally a CSR safety net; `phi_self_neighbor_attempt_count` is the direct guard against attempted phi periodic self-neighbors before CSR coalescing can hide them:
 
 ```cpp
 std::size_t CountDuplicateColumnRows(const SparseMatrixCsr& matrix) noexcept {
@@ -666,16 +787,38 @@ std::size_t CountDuplicateColumnRows(const SparseMatrixCsr& matrix) noexcept {
   }
   return count;
 }
+
+std::size_t CountAxisymmetricInteriorRowWidth5(
+    const DiffusionPatchLayout& layout,
+    const SparseMatrixCsr& matrix) noexcept {
+  if (layout.phi_cells != 1u || layout.radial_cells < 3u || layout.theta_cells < 3u) {
+    return 0u;
+  }
+  std::size_t count = 0u;
+  for (std::size_t r = 1u; r + 1u < layout.radial_cells; ++r) {
+    for (std::size_t t = 1u; t + 1u < layout.theta_cells; ++t) {
+      const std::size_t row = LinearIndex(layout, r, t, 0u);
+      const std::size_t width = matrix.row_offsets[row + 1u] - matrix.row_offsets[row];
+      if (width == 5u) {
+        ++count;
+      }
+    }
+  }
+  return count;
+}
 ```
 
 Add report tokens:
 
 ```cpp
 << "; phi_coupling_count=" << result.phi_coupling_count
+<< "; phi_neighbor_loop_executed=" << (result.phi_neighbor_loop_executed ? "true" : "false")
+<< "; phi_self_neighbor_attempt_count=" << result.phi_self_neighbor_attempt_count
 << "; duplicate_column_row_count=" << result.duplicate_column_row_count
+<< "; axisymmetric_interior_row_width5_count=" << result.interior_row_width5_count
 ```
 
-Update `ValidateGenericDiffusionAssemblyDiagnostics` to require both tokens.
+Update `ValidateGenericDiffusionAssemblyDiagnostics` to require all five tokens. Define `phi_coupling_count` as the number of nonzero off-diagonal phi face-pair conductances attempted before CSR assembly, not as row count.
 
 - [ ] **Step 5: Implement distributed diagnostics**
 
@@ -684,37 +827,53 @@ Add fields to `DistributedGenericDiffusionAssemblyResult`:
 ```cpp
 std::size_t local_phi_coupling_count{0};
 std::size_t global_phi_coupling_count{0};
+bool local_phi_neighbor_loop_executed{false};
+bool global_phi_neighbor_loop_executed{false};
+std::size_t local_phi_self_neighbor_attempt_count{0};
+std::size_t global_phi_self_neighbor_attempt_count{0};
 std::size_t local_duplicate_column_row_count{0};
 std::size_t global_duplicate_column_row_count{0};
+std::size_t local_axisymmetric_interior_row_width5_count{0};
+std::size_t global_axisymmetric_interior_row_width5_count{0};
 ```
 
 In distributed phi conductance loop, skip when `ownership.global_phi_cells <= 1u`:
 
 ```cpp
 if (ownership.global_phi_cells > 1u) {
+  result.local_phi_neighbor_loop_executed = true;
   // existing phi conductance loop
 }
 ```
 
-When adding phi conductance with `AddOwnedPairConductance`, increment local phi count only if `GlobalRow(..., p) != GlobalRow(..., next_phi)` and conductance is nonzero:
+When adding phi conductance with `AddOwnedPairConductance`, increment local self-neighbor attempts before calling the row accumulator, and increment local phi coupling count only for nonzero non-self face pairs:
 
 ```cpp
-if (conductance != 0.0 &&
-    GlobalRow(ownership, gr, t, p) != GlobalRow(ownership, gr, t, next_phi)) {
+const auto lhs = GlobalRow(ownership, gr, t, p);
+const auto rhs = GlobalRow(ownership, gr, t, next_phi);
+if (lhs == rhs) {
+  ++result.local_phi_self_neighbor_attempt_count;
+} else if (conductance != 0.0) {
   ++result.local_phi_coupling_count;
 }
 ```
 
-After `BuildLocalCsr`, compute local duplicate rows with the same nested check as the test. Reduce both counts with `MPI_Allreduce(..., MPI_SUM, ...)`. Add report tokens:
+After `BuildLocalCsr`, compute local duplicate rows with the same nested check as the test. Compute local axisymmetric interior width-5 rows only for owned global rows with `1 <= r < Nr-1`, `1 <= theta < Ntheta-1`, and `global_phi_cells == 1`. Reduce count fields with `MPI_Allreduce(..., MPI_SUM, ...)` and reduce `local_phi_neighbor_loop_executed` with `MPI_LOR`. Add report tokens:
 
 ```cpp
 << "; local_phi_coupling_count=" << result.local_phi_coupling_count
 << "; global_phi_coupling_count=" << result.global_phi_coupling_count
+<< "; global_phi_neighbor_loop_executed="
+<< (result.global_phi_neighbor_loop_executed ? "true" : "false")
+<< "; local_phi_self_neighbor_attempt_count=" << result.local_phi_self_neighbor_attempt_count
+<< "; global_phi_self_neighbor_attempt_count=" << result.global_phi_self_neighbor_attempt_count
 << "; local_duplicate_column_row_count=" << result.local_duplicate_column_row_count
 << "; global_duplicate_column_row_count=" << result.global_duplicate_column_row_count
+<< "; global_axisymmetric_interior_row_width5_count="
+<< result.global_axisymmetric_interior_row_width5_count
 ```
 
-Update `ValidateDistributedGenericDiffusionAssemblyDiagnostics` to require all four tokens.
+Update `ValidateDistributedGenericDiffusionAssemblyDiagnostics` to require all new tokens. Define `global_phi_coupling_count` as the sum of nonzero off-diagonal phi face-pair conductances across ranks before HYPRE insertion.
 
 - [ ] **Step 6: Run passing tests**
 
@@ -829,7 +988,7 @@ git -C 'F:\dec3d' commit -m 'Enforce axisymmetric initialization invariants'
 
 ---
 
-## Task 6: Runtime Hydro Mode And Invariants
+## Task 6A: Hydro Configuration Only
 
 **Files:**
 - Modify: `src/app/dec3d_app.cpp`
@@ -941,9 +1100,6 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
             std::string::npos);
   DEC3D_CHECK(axisym_result.report_line.find("phi_sweep_executed=false") !=
               std::string::npos);
-  DEC3D_CHECK(axisym_result.report_line.find("max_abs_mom_phi=") != std::string::npos);
-  DEC3D_CHECK(axisym_result.report_line.find("axisymmetric_invariant_ok=true") !=
-              std::string::npos);
   DEC3D_CHECK(axisym_result.report_line.find("h_hydro_phi_sweep_wall_s=0") !=
               std::string::npos);
 ```
@@ -975,7 +1131,52 @@ if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality)) {
 
 Ensure the static-grid branch is selected by existing `config.mesh.moving_mesh=false`.
 
-- [ ] **Step 4: Add invariant reducer**
+- [ ] **Step 4: Run hydro-configuration passing test**
+
+Run Step 2 command again.
+
+Expected: executable exits `0` and proves `apply_phi_sweep=false` reaches runtime.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git -C 'F:\dec3d' add src/app/dec3d_app.cpp src/hydro/driver/hydro_operator.cpp src/hydro/driver/static_grid_hydro.cpp tests/contract/test_p5_runtime_all_stages.cpp
+git -C 'F:\dec3d' commit -m 'Configure no-ALE axisymmetric hydro directions'
+```
+
+---
+
+## Task 6B: Runtime Invariant Diagnostics
+
+**Files:**
+- Modify: `src/app/dec3d_app.cpp`
+- Modify: `tests/contract/test_p5_runtime_all_stages.cpp`
+
+- [ ] **Step 1: Extend serial smoke with invariant assertions**
+
+In the axisymmetric H-only block added in Task 6A, add:
+
+```cpp
+  DEC3D_CHECK(axisym_result.report_line.find("max_abs_mom_phi=") != std::string::npos);
+  DEC3D_CHECK(axisym_result.report_line.find("max_abs_v_phi=") != std::string::npos);
+  DEC3D_CHECK(axisym_result.report_line.find("axisymmetric_mom_phi_tol=") !=
+              std::string::npos);
+  DEC3D_CHECK(axisym_result.report_line.find("axisymmetric_v_phi_tol=") !=
+              std::string::npos);
+  DEC3D_CHECK(axisym_result.report_line.find("axisymmetric_invariant_ok=true") !=
+              std::string::npos);
+```
+
+- [ ] **Step 2: Run failing test**
+
+```powershell
+cmake --build 'F:\dec3d\build-hypre' --config Release --target dec3d_contract_p5_runtime_all_stages --clean-first -- /m
+& 'F:\dec3d\build-hypre\Release\dec3d_contract_p5_runtime_all_stages.exe'
+```
+
+Expected before implementation: invariant report tokens are missing.
+
+- [ ] **Step 3: Add invariant reducer**
 
 In `src/app/dec3d_app.cpp`, add helper:
 
@@ -983,6 +1184,10 @@ In `src/app/dec3d_app.cpp`, add helper:
 struct AxisymmetricInvariantSummary {
   double max_abs_mom_phi{0.0};
   double max_abs_v_phi{0.0};
+  double max_abs_mom_total{0.0};
+  double max_abs_velocity{0.0};
+  double mom_phi_tol{1.0e-30};
+  double v_phi_tol{1.0e-30};
   bool ok{true};
 };
 
@@ -993,23 +1198,36 @@ AxisymmetricInvariantSummary EvaluateAxisymmetricInvariants(
     for (std::size_t t = 0; t < state.layout.theta_cells; ++t) {
       for (std::size_t p = 0; p < state.layout.phi_cells; ++p) {
         const double rho = state.rho(r, t, p);
+        const double mom_r = state.mom_r(r, t, p);
+        const double mom_theta = state.mom_theta(r, t, p);
         const double mom_phi = state.mom_phi(r, t, p);
         summary.max_abs_mom_phi = std::max(summary.max_abs_mom_phi, std::abs(mom_phi));
+        summary.max_abs_mom_total = std::max(
+            summary.max_abs_mom_total,
+            std::sqrt(mom_r * mom_r + mom_theta * mom_theta + mom_phi * mom_phi));
         if (rho > 0.0) {
-          summary.max_abs_v_phi =
-              std::max(summary.max_abs_v_phi, std::abs(mom_phi / rho));
+          const double vr = mom_r / rho;
+          const double vt = mom_theta / rho;
+          const double vp = mom_phi / rho;
+          summary.max_abs_v_phi = std::max(summary.max_abs_v_phi, std::abs(vp));
+          summary.max_abs_velocity =
+              std::max(summary.max_abs_velocity, std::sqrt(vr * vr + vt * vt + vp * vp));
         }
       }
     }
   }
-  summary.ok = summary.max_abs_mom_phi <= 1.0e-20 && summary.max_abs_v_phi <= 1.0e-20;
+  summary.mom_phi_tol = std::max(1.0e-30, 1.0e-14 * summary.max_abs_mom_total);
+  summary.v_phi_tol = std::max(1.0e-30, 1.0e-14 * summary.max_abs_velocity);
+  summary.ok =
+      summary.max_abs_mom_phi <= summary.mom_phi_tol &&
+      summary.max_abs_v_phi <= summary.v_phi_tol;
   return summary;
 }
 ```
 
-For MPI local states, compute local summary and use `MPI_Allreduce(..., MPI_MAX, ...)` for both max values.
+For MPI local states, compute local summary and use `MPI_Allreduce(..., MPI_MAX, ...)` for all max values before computing tolerances.
 
-- [ ] **Step 5: Add runtime report tokens**
+- [ ] **Step 4: Add runtime report tokens**
 
 In serial and distributed loop reports, append:
 
@@ -1022,6 +1240,8 @@ In serial and distributed loop reports, append:
     (loop.h_hydro_phi_sweep_wall_s > 0.0 ? "true" : "false"))
 << "; max_abs_mom_phi=" << axisym.max_abs_mom_phi
 << "; max_abs_v_phi=" << axisym.max_abs_v_phi
+<< "; axisymmetric_mom_phi_tol=" << axisym.mom_phi_tol
+<< "; axisymmetric_v_phi_tol=" << axisym.v_phi_tol
 << "; axisymmetric_invariant_ok="
 << (!dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) || axisym.ok ? "true" : "false")
 ```
@@ -1037,22 +1257,22 @@ if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) && !axisym.ok) {
 }
 ```
 
-- [ ] **Step 6: Run passing test**
+- [ ] **Step 5: Run passing test**
 
 Run Step 2 command again.
 
 Expected: executable exits `0`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```powershell
-git -C 'F:\dec3d' add src/app/dec3d_app.cpp src/hydro/driver/hydro_operator.cpp src/hydro/driver/static_grid_hydro.cpp tests/contract/test_p5_runtime_all_stages.cpp
-git -C 'F:\dec3d' commit -m 'Configure no-ALE axisymmetric hydro runtime'
+git -C 'F:\dec3d' add src/app/dec3d_app.cpp tests/contract/test_p5_runtime_all_stages.cpp
+git -C 'F:\dec3d' commit -m 'Add axisymmetric runtime invariant diagnostics'
 ```
 
 ---
 
-## Task 7: Distributed All-Stage Axisymmetric Smoke
+## Task 7: Distributed H,T,E,R,A Axisymmetric Smoke
 
 **Files:**
 - Create: `cases/axisymmetric_2d_noale_allstages_smoke.in`
@@ -1065,6 +1285,7 @@ Create `cases/axisymmetric_2d_noale_smoke.pro`:
 
 ```text
 r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s radiation_scale epsilon_alpha_erg_cm3
+0 1.0 1.0 1.0 -1.0e6 0 0 1.0 0
 10 1.0 1.0 1.0 -1.0e6 0 0 1.0 0
 20 1.0 1.0 1.0 -1.0e6 0 0 1.0 0
 30 1.0 1.0 1.0 -1.0e6 0 0 1.0 0
@@ -1091,7 +1312,7 @@ dimensionality = axisymmetric_2d
 radial_cells = 4
 theta_cells = 4
 phi_cells = 1
-radial_min_cm = 1.0e-3
+radial_min_cm = 0.0
 radial_max_cm = 3.0e-3
 theta_min = 0.0
 theta_max = 3.141592653589793
@@ -1240,9 +1461,10 @@ git -C 'F:\dec3d' commit -m 'Add axisymmetric all-stage smoke case'
 
 ---
 
-## Task 8: Vector Diagnostic And 2D-vs-3D Regression
+## Task 8: Production Vector Diagnostic And 2D-vs-3D Regression
 
 **Files:**
+- Create: `src/state/diagnostics/axisymmetric_vector_diagnostics.hpp`
 - Create: `tests/contract/test_axisymmetric_2d_regression.cpp`
 - Modify: `CMakeLists.txt`
 
@@ -1265,7 +1487,95 @@ target_link_libraries(dec3d_contract_axisymmetric_2d_regression PRIVATE
 )
 ```
 
-- [ ] **Step 2: Create vector diagnostic regression test**
+- [ ] **Step 2: Create production vector diagnostic helper**
+
+Create `src/state/diagnostics/axisymmetric_vector_diagnostics.hpp`:
+
+```cpp
+#pragma once
+
+#include "mesh/spherical/spherical_mesh.hpp"
+#include "state/canonical_state/canonical_state.hpp"
+
+#include <cmath>
+#include <sstream>
+#include <string>
+
+namespace dec3d::state::diagnostics {
+constexpr double kPi = 3.141592653589793238462643383279502884;
+
+struct IntegratedCartesianMomentum {
+  double px{0.0};
+  double py{0.0};
+  double pz{0.0};
+  std::string report_line;
+};
+
+[[nodiscard]] inline double CellVolume(
+    const dec3d::mesh::SphericalGeometryMetadata& geometry,
+    const dec3d::state::CanonicalStateLayout& layout,
+    std::size_t r,
+    std::size_t t,
+    std::size_t p) noexcept {
+  return geometry.cell_volumes[((r * layout.theta_cells) + t) * layout.phi_cells + p];
+}
+
+[[nodiscard]] inline IntegratedCartesianMomentum
+ComputeAxisymmetricCartesianMomentum(
+    const dec3d::state::CanonicalState& state,
+    const dec3d::mesh::SphericalGeometryMetadata& geometry) {
+  IntegratedCartesianMomentum out;
+  for (std::size_t r = 0; r < state.layout.radial_cells; ++r) {
+    for (std::size_t t = 0; t < state.layout.theta_cells; ++t) {
+      const double theta = 0.5 * (geometry.theta_faces[t] + geometry.theta_faces[t + 1u]);
+      const double volume = CellVolume(geometry, state.layout, r, t, 0u);
+      out.pz +=
+          (state.mom_r(r, t, 0u) * std::cos(theta) -
+           state.mom_theta(r, t, 0u) * std::sin(theta)) * volume;
+    }
+  }
+  std::ostringstream report;
+  report << "diagnostic_id=axisymmetric.cartesian_momentum"
+         << "; cartesian_momentum_phi_average=analytic"
+         << "; px=" << out.px << "; py=" << out.py << "; pz=" << out.pz;
+  out.report_line = report.str();
+  return out;
+}
+
+[[nodiscard]] inline IntegratedCartesianMomentum ComputeFull3DCartesianMomentum(
+    const dec3d::state::CanonicalState& state,
+    const dec3d::mesh::SphericalGeometryMetadata& geometry) {
+  IntegratedCartesianMomentum out;
+  for (std::size_t r = 0; r < state.layout.radial_cells; ++r) {
+    for (std::size_t t = 0; t < state.layout.theta_cells; ++t) {
+      const double theta = 0.5 * (geometry.theta_faces[t] + geometry.theta_faces[t + 1u]);
+      const double st = std::sin(theta);
+      const double ct = std::cos(theta);
+      for (std::size_t p = 0; p < state.layout.phi_cells; ++p) {
+        const double phi = 0.5 * (geometry.phi_faces[p] + geometry.phi_faces[p + 1u]);
+        const double cp = std::cos(phi);
+        const double sp = std::sin(phi);
+        const double volume = CellVolume(geometry, state.layout, r, t, p);
+        const double mr = state.mom_r(r, t, p);
+        const double mt = state.mom_theta(r, t, p);
+        const double mp = state.mom_phi(r, t, p);
+        out.px += (mr * st * cp + mt * ct * cp - mp * sp) * volume;
+        out.py += (mr * st * sp + mt * ct * sp + mp * cp) * volume;
+        out.pz += (mr * ct - mt * st) * volume;
+      }
+    }
+  }
+  std::ostringstream report;
+  report << "diagnostic_id=full3d.cartesian_momentum"
+         << "; cartesian_momentum_phi_average=numeric"
+         << "; px=" << out.px << "; py=" << out.py << "; pz=" << out.pz;
+  out.report_line = report.str();
+  return out;
+}
+}  // namespace dec3d::state::diagnostics
+```
+
+- [ ] **Step 3: Create vector diagnostic regression test**
 
 Create `tests/contract/test_axisymmetric_2d_regression.cpp` with:
 
@@ -1273,48 +1583,13 @@ Create `tests/contract/test_axisymmetric_2d_regression.cpp` with:
 #include "core/array3d.hpp"
 #include "mesh/spherical/spherical_mesh.hpp"
 #include "state/canonical_state/canonical_state.hpp"
+#include "state/diagnostics/axisymmetric_vector_diagnostics.hpp"
 #include "test_assert.hpp"
 
 #include <cmath>
 #include <sstream>
 
 namespace {
-constexpr double kPi = 3.141592653589793238462643383279502884;
-
-double CellVolume(const dec3d::mesh::SphericalGeometryMetadata& geometry,
-                  std::size_t r,
-                  std::size_t t,
-                  std::size_t p,
-                  std::size_t theta_cells,
-                  std::size_t phi_cells) {
-  return geometry.cell_volumes[((r * theta_cells) + t) * phi_cells + p];
-}
-
-struct AxisymmetricMomentum {
-  double px{0.0};
-  double py{0.0};
-  double pz{0.0};
-};
-
-AxisymmetricMomentum AnalyticAxisymmetricMomentum(
-    const dec3d::state::CanonicalState& state,
-    const dec3d::mesh::SphericalGeometryMetadata& geometry) {
-  AxisymmetricMomentum out;
-  for (std::size_t r = 0; r < state.layout.radial_cells; ++r) {
-    for (std::size_t t = 0; t < state.layout.theta_cells; ++t) {
-      const double theta = 0.5 * (geometry.theta_faces[t] + geometry.theta_faces[t + 1u]);
-      const double volume = CellVolume(geometry, r, t, 0u,
-                                       state.layout.theta_cells,
-                                       state.layout.phi_cells);
-      const double rho = state.rho(r, t, 0u);
-      const double vr = state.mom_r(r, t, 0u) / rho;
-      const double vt = state.mom_theta(r, t, 0u) / rho;
-      out.pz += rho * (vr * std::cos(theta) - vt * std::sin(theta)) * volume;
-    }
-  }
-  return out;
-}
-
 void CheckNear(double lhs, double rhs, double tol, const char* label) {
   if (std::abs(lhs - rhs) > tol) {
     std::ostringstream detail;
@@ -1322,39 +1597,7 @@ void CheckNear(double lhs, double rhs, double tol, const char* label) {
     dec3d::test::Fail("near equality", __FILE__, __LINE__, detail.str());
   }
 }
-}  // namespace
 
-int main() {
-  dec3d::state::CanonicalStateLayout layout;
-  layout.radial_cells = 2u;
-  layout.theta_cells = 4u;
-  layout.phi_cells = 1u;
-  layout.radiation_group_count = 1u;
-  auto state = dec3d::state::CanonicalState::Create(layout);
-  const auto geometry = dec3d::mesh::BuildSphericalGeometry(
-      dec3d::mesh::SphericalMeshDescriptor{2u, 4u, 1u, 1.0, 2.0});
-  DEC3D_CHECK(geometry.valid);
-  for (std::size_t r = 0; r < layout.radial_cells; ++r) {
-    for (std::size_t t = 0; t < layout.theta_cells; ++t) {
-      state.rho(r, t, 0u) = 2.0;
-      state.mom_r(r, t, 0u) = 6.0;
-      state.mom_theta(r, t, 0u) = 2.0;
-      state.mom_phi(r, t, 0u) = 0.0;
-    }
-  }
-  const auto momentum = AnalyticAxisymmetricMomentum(state, geometry);
-  CheckNear(momentum.px, 0.0, 0.0, "axisymmetric px");
-  CheckNear(momentum.py, 0.0, 0.0, "axisymmetric py");
-  DEC3D_CHECK(std::isfinite(momentum.pz));
-  return 0;
-}
-```
-
-- [ ] **Step 3: Add 2D-vs-3D averaged field regression**
-
-Add this helper above `main()`:
-
-```cpp
 double AveragePhi(const dec3d::core::Array3D<double>& field,
                   std::size_t radial,
                   std::size_t theta) {
@@ -1364,11 +1607,36 @@ double AveragePhi(const dec3d::core::Array3D<double>& field,
   }
   return sum / static_cast<double>(field.extent_phi());
 }
-```
+}  // namespace
 
-Then add this block before the final `return 0;` in `main()`:
+int main() {
+  {
+    dec3d::state::CanonicalStateLayout layout;
+    layout.radial_cells = 2u;
+    layout.theta_cells = 4u;
+    layout.phi_cells = 1u;
+    layout.radiation_group_count = 1u;
+    auto state = dec3d::state::CanonicalState::Create(layout);
+    const auto geometry = dec3d::mesh::BuildSphericalGeometry(
+        dec3d::mesh::SphericalMeshDescriptor{2u, 4u, 1u, 1.0, 2.0});
+    DEC3D_CHECK(geometry.valid);
+    for (std::size_t r = 0; r < layout.radial_cells; ++r) {
+      for (std::size_t t = 0; t < layout.theta_cells; ++t) {
+        state.rho(r, t, 0u) = 2.0;
+        state.mom_r(r, t, 0u) = 6.0;
+        state.mom_theta(r, t, 0u) = 2.0;
+        state.mom_phi(r, t, 0u) = 0.0;
+      }
+    }
+    const auto momentum =
+        dec3d::state::diagnostics::ComputeAxisymmetricCartesianMomentum(state, geometry);
+    CheckNear(momentum.px, 0.0, 0.0, "axisymmetric px");
+    CheckNear(momentum.py, 0.0, 0.0, "axisymmetric py");
+    DEC3D_CHECK(std::isfinite(momentum.pz));
+    DEC3D_CHECK(momentum.report_line.find("cartesian_momentum_phi_average=analytic") !=
+                std::string::npos);
+  }
 
-```cpp
   dec3d::state::CanonicalStateLayout axisym_layout;
   axisym_layout.radial_cells = 3u;
   axisym_layout.theta_cells = 4u;
@@ -1413,9 +1681,25 @@ Then add this block before the final `return 0;` in `main()`:
                 1.0e-14, "e_fluid_total phi average");
     }
   }
-```
 
-This regression is structural and completes the first-version 2D-vs-replicated-3D consistency gate.
+  const auto axisym_geometry = dec3d::mesh::BuildSphericalGeometry(
+      dec3d::mesh::SphericalMeshDescriptor{3u, 4u, 1u, 1.0, 2.0});
+  const auto full_geometry = dec3d::mesh::BuildSphericalGeometry(
+      dec3d::mesh::SphericalMeshDescriptor{3u, 4u, 8u, 1.0, 2.0});
+  DEC3D_CHECK(axisym_geometry.valid);
+  DEC3D_CHECK(full_geometry.valid);
+  const auto axisym_momentum =
+      dec3d::state::diagnostics::ComputeAxisymmetricCartesianMomentum(axisym, axisym_geometry);
+  const auto full_momentum =
+      dec3d::state::diagnostics::ComputeFull3DCartesianMomentum(full3d, full_geometry);
+  CheckNear(axisym_momentum.px, 0.0, 0.0, "axisym px");
+  CheckNear(axisym_momentum.py, 0.0, 0.0, "axisym py");
+  CheckNear(full_momentum.px, 0.0, 1.0e-12, "full3d replicated px");
+  CheckNear(full_momentum.py, 0.0, 1.0e-12, "full3d replicated py");
+  CheckNear(axisym_momentum.pz, full_momentum.pz, 1.0e-12, "axisym full3d pz");
+  return 0;
+}
+```
 
 - [ ] **Step 4: Run test**
 
@@ -1429,7 +1713,7 @@ Expected: executable exits `0`.
 - [ ] **Step 5: Commit**
 
 ```powershell
-git -C 'F:\dec3d' add tests/contract/test_axisymmetric_2d_regression.cpp CMakeLists.txt
+git -C 'F:\dec3d' add src/state/diagnostics/axisymmetric_vector_diagnostics.hpp tests/contract/test_axisymmetric_2d_regression.cpp CMakeLists.txt
 git -C 'F:\dec3d' commit -m 'Add axisymmetric vector diagnostics regression'
 ```
 
@@ -1445,7 +1729,28 @@ git -C 'F:\dec3d' commit -m 'Add axisymmetric vector diagnostics regression'
 
 - [ ] **Step 1: Add failing checkpoint metadata test**
 
-In `tests/contract/test_p5_io_checkpoint_files.cpp`, after the existing restart metadata assertions, add:
+In `tests/contract/test_p5_io_checkpoint_files.cpp`, include the app entrypoint and add a small string replacer in the anonymous namespace:
+
+```cpp
+#include "app/dec3d_app.hpp"
+```
+
+```cpp
+#include <vector>
+```
+
+```cpp
+std::string ReplaceAll(std::string text, const std::string& from, const std::string& to) {
+  std::size_t pos = 0;
+  while ((pos = text.find(from, pos)) != std::string::npos) {
+    text.replace(pos, from.size(), to);
+    pos += to.size();
+  }
+  return text;
+}
+```
+
+After the existing restart metadata assertions, add:
 
 ```cpp
   DEC3D_CHECK(restart.find("# dimensionality=full_3d") != std::string::npos);
@@ -1475,6 +1780,51 @@ Then add an axisymmetric checkpoint write using the same profile:
   DEC3D_CHECK(axisym_restart.find("# dimensionality=axisymmetric_2d") !=
               std::string::npos);
   DEC3D_CHECK(axisym_restart.find("# phi_cells=1") != std::string::npos);
+```
+
+Add restart mismatch checks in both directions:
+
+```cpp
+  const std::vector<std::string> full_deck_axisym_restart_args{
+      "dec3d.exe",
+      "-input",
+      deck_path.string(),
+      "-profile",
+      profile_path.string(),
+      "-restart",
+      (root / "output_axisym" / "restart_000000.snap").string()};
+  const auto full_deck_axisym_restart =
+      dec3d::app::RunDec3DCommandLine(full_deck_axisym_restart_args);
+  DEC3D_CHECK(full_deck_axisym_restart.exit_code != 0);
+  DEC3D_CHECK(full_deck_axisym_restart.failure_diagnostics.find(
+                  "restart dimensionality does not match input deck") !=
+              std::string::npos);
+
+  const auto axisym_deck_path = root / "case_axisym_restart_mismatch.in";
+  auto axisym_deck_text = ReadText(deck_path);
+  axisym_deck_text = ReplaceAll(axisym_deck_text,
+                                "geometry = spherical\n",
+                                "geometry = spherical\ndimensionality = axisymmetric_2d\n");
+  axisym_deck_text = ReplaceAll(axisym_deck_text, "phi_cells = 4", "phi_cells = 1");
+  axisym_deck_text = ReplaceAll(axisym_deck_text, "moving_mesh = true", "moving_mesh = false");
+  axisym_deck_text = ReplaceAll(axisym_deck_text,
+                                (root / "output").generic_string(),
+                                (root / "output_axisym_mismatch").generic_string());
+  WriteText(axisym_deck_path, axisym_deck_text);
+  const std::vector<std::string> axisym_deck_full_restart_args{
+      "dec3d.exe",
+      "-input",
+      axisym_deck_path.string(),
+      "-profile",
+      profile_path.string(),
+      "-restart",
+      (root / "output" / "restart_000000.snap").string()};
+  const auto axisym_deck_full_restart =
+      dec3d::app::RunDec3DCommandLine(axisym_deck_full_restart_args);
+  DEC3D_CHECK(axisym_deck_full_restart.exit_code != 0);
+  DEC3D_CHECK(axisym_deck_full_restart.failure_diagnostics.find(
+                  "restart dimensionality does not match input deck") !=
+              std::string::npos);
 ```
 
 - [ ] **Step 2: Implement metadata write**
@@ -1620,18 +1970,26 @@ Expected: branch `codex/axisymmetric-2d` pushed to `origin/codex/axisymmetric-2d
 ## Self-Review Checklist
 
 - Spec coverage:
+  - Preflight branch/build/MPI/TOPS/baseline checks: Task 0.
   - Input dimensionality, `phi_cells=1`, no ALE, `m=0`: Task 1.
+  - Existing `full_3d` decks remain backward compatible: Task 1 and final tests.
+  - `axisymmetric_2d` requires full `theta=[0,pi]` and `phi=[0,2*pi]` deck ranges: Task 1.
   - Full `2*pi` volume and area: Task 2.
   - Pole/origin remap with `phi=1`: Task 3.
-  - No phi derivative/coupling/self-neighbor/duplicates: Task 4.
+  - No phi derivative/coupling/self-neighbor/duplicates, with pre-CSR self-neighbor diagnostics: Task 4.
+  - Matrix diagnostics define `phi_coupling_count` as nonzero off-diagonal phi face-pair conductance count: Task 4.
   - Perturbation normalization and `mom_phi=0`: Task 5.
-  - Hydro skips phi sweep and preserves spherical source terms: Task 6.
+  - Hydro skips phi sweep, disables phi macro/coarse sweep, and preserves spherical source terms: Task 6A.
+  - Runtime `mom_phi` invariant uses absolute-plus-relative tolerance and reports tolerances: Task 6B.
   - All stages `H,T,E,R,A`: Task 7.
   - Vector diagnostics and 2D-vs-3D m=0 consistency: Task 8.
-  - Restart dimensionality guard: Task 9.
+  - Restart dimensionality guard covers both mismatch directions: Task 9.
   - Clean rebuild and end-to-end evidence: Task 10.
-- Placeholder scan: no `TBD`, `TODO`, or unspecified `write tests` steps remain.
+- Geometry/source/output scaling:
+  - No diagnostic, source, or output reducer applies an extra `2*pi` outside geometry volumes and areas.
+  - `phi_sweep_configured` appears only in input/deck diagnostics; `phi_sweep_executed` appears only in runtime/hydro diagnostics.
+- Placeholder scan: no forbidden placeholder terms or unspecified `write tests` steps remain.
 - Type consistency:
   - `MeshDimensionality::axisymmetric_2d` is introduced in Task 1 and reused later.
-  - Report token names are consistent: `mesh_dimensionality`, `phi_sweep_executed`, `global_phi_coupling_count`, `global_duplicate_column_row_count`, `axisymmetric_invariant_ok`.
+  - Report token names are consistent: `mesh_dimensionality`, `phi_sweep_configured`, `phi_sweep_executed`, `global_phi_coupling_count`, `global_phi_self_neighbor_attempt_count`, `global_duplicate_column_row_count`, `axisymmetric_invariant_ok`.
   - Test names and build targets match existing CMake naming style.
