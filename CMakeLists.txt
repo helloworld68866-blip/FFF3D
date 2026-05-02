@@ -559,6 +559,16 @@ if(DEC3D_BUILD_TESTS)
   )
   target_link_libraries(dec3d_contract_p5_runtime_all_stages PRIVATE dec3d_app)
 
+  dec3d_add_test(dec3d_contract_axisymmetric_2d_regression
+    tests/contract/test_axisymmetric_2d_regression.cpp
+  )
+  target_link_libraries(dec3d_contract_axisymmetric_2d_regression
+    PRIVATE
+      dec3d_state
+      dec3d_mesh
+      dec3d_core
+  )
+
   add_test(
     NAME dec3d_contract_p5_io_executable_smoke
     COMMAND dec3d
