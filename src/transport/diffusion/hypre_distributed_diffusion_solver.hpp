@@ -70,6 +70,16 @@ struct DistributedGenericDiffusionAssemblyResult {
   std::size_t local_nonzero_count{0};
   std::size_t local_off_rank_column_count{0};
   std::size_t local_radial_seam_coupling_count{0};
+  std::size_t local_phi_coupling_count{0};
+  std::size_t global_phi_coupling_count{0};
+  bool local_phi_neighbor_loop_executed{false};
+  bool global_phi_neighbor_loop_executed{false};
+  std::size_t local_phi_self_neighbor_attempt_count{0};
+  std::size_t global_phi_self_neighbor_attempt_count{0};
+  std::size_t local_duplicate_column_row_count{0};
+  std::size_t global_duplicate_column_row_count{0};
+  std::size_t local_axisymmetric_interior_row_width5_count{0};
+  std::size_t global_axisymmetric_interior_row_width5_count{0};
   std::size_t global_nonzero_count{0};
   std::size_t global_off_rank_column_count{0};
   std::size_t global_radial_seam_coupling_count{0};

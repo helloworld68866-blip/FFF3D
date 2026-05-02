@@ -40,6 +40,21 @@ double CsrValue(
   return 0.0;
 }
 
+bool LocalRowHasDuplicateColumns(
+    const dec3d::transport::DistributedLocalCsrMatrix& matrix,
+    std::size_t local_row) {
+  for (std::size_t a = matrix.row_offsets[local_row];
+       a < matrix.row_offsets[local_row + 1u];
+       ++a) {
+    for (std::size_t b = a + 1u; b < matrix.row_offsets[local_row + 1u]; ++b) {
+      if (matrix.column_indices[a] == matrix.column_indices[b]) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 dec3d::transport::DiffusionGridLayout Layout(
     std::size_t radial,
     std::size_t theta,
@@ -219,6 +234,53 @@ int main(int argc, char** argv) {
       DEC3D_CHECK(ownership.failure_diagnostics.find("inconsistent global layout") !=
                   std::string::npos);
       DEC3D_CHECK(ownership.failure_diagnostics.find("collective_row_ownership_valid=false") !=
+                  std::string::npos);
+    }
+
+    {
+      const auto layout = Layout(4, 4, 1);
+      const auto geometry = BuildGeometry(layout, 1.0, 3.0, 0.5, 1.2);
+      const auto problem =
+          BuildDistributedProblem(MPI_COMM_WORLD, layout, geometry, 0.1, 4.0, PatchBoundary());
+      const auto assembly = AssembleDistributedGenericDiffusionSystem(problem);
+      DEC3D_CHECK(assembly.success);
+      DEC3D_CHECK_EQ(assembly.ownership.global_row_count, std::size_t{16});
+      DEC3D_CHECK_EQ(assembly.global_phi_coupling_count, std::size_t{0});
+      DEC3D_CHECK(!assembly.global_phi_neighbor_loop_executed);
+      DEC3D_CHECK_EQ(assembly.global_phi_self_neighbor_attempt_count, std::size_t{0});
+      DEC3D_CHECK_EQ(assembly.global_duplicate_column_row_count, std::size_t{0});
+      DEC3D_CHECK_EQ(
+          assembly.global_axisymmetric_interior_row_width5_count,
+          std::size_t{4});
+      for (std::size_t local_row = 0;
+           local_row < assembly.ownership.local_row_count;
+           ++local_row) {
+        DEC3D_CHECK(!LocalRowHasDuplicateColumns(assembly.local_matrix, local_row));
+        const std::size_t global_row = assembly.ownership.local_row_begin + local_row;
+        const std::size_t global_radial =
+            global_row / (layout.theta_cells * layout.phi_cells);
+        const std::size_t theta =
+            (global_row / layout.phi_cells) % layout.theta_cells;
+        if (global_radial == 1u && theta == 1u) {
+          DEC3D_CHECK_EQ(
+              assembly.local_matrix.row_offsets[local_row + 1u] -
+                  assembly.local_matrix.row_offsets[local_row],
+              std::size_t{5});
+        }
+      }
+      DEC3D_CHECK(assembly.report_line.find("global_phi_coupling_count=0") !=
+                  std::string::npos);
+      DEC3D_CHECK(assembly.report_line.find(
+                      "global_phi_neighbor_loop_executed=false") !=
+                  std::string::npos);
+      DEC3D_CHECK(assembly.report_line.find(
+                      "global_phi_self_neighbor_attempt_count=0") !=
+                  std::string::npos);
+      DEC3D_CHECK(assembly.report_line.find(
+                      "global_duplicate_column_row_count=0") !=
+                  std::string::npos);
+      DEC3D_CHECK(assembly.report_line.find(
+                      "global_axisymmetric_interior_row_width5_count=4") !=
                   std::string::npos);
     }
 

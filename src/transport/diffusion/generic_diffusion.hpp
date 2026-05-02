@@ -90,6 +90,11 @@ struct GenericDiffusionAssemblyResult {
   std::size_t row_count{0};
   std::size_t nonzero_count{0};
   std::size_t boundary_row_count{0};
+  std::size_t phi_coupling_count{0};
+  bool phi_neighbor_loop_executed{false};
+  std::size_t phi_self_neighbor_attempt_count{0};
+  std::size_t duplicate_column_row_count{0};
+  std::size_t interior_row_width5_count{0};
   double min_diagonal{0.0};
   double max_abs_offdiagonal_row_sum{0.0};
   double max_rhs_abs{0.0};

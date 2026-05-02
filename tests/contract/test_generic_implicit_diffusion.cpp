@@ -83,6 +83,21 @@ std::size_t TestLinearIndex(
   return ((radial * layout.theta_cells) + theta) * layout.phi_cells + phi;
 }
 
+bool RowHasDuplicateColumns(
+    const dec3d::transport::SparseMatrixCsr& matrix,
+    std::size_t row) {
+  for (std::size_t a = matrix.row_offsets[row];
+       a < matrix.row_offsets[row + 1u];
+       ++a) {
+    for (std::size_t b = a + 1u; b < matrix.row_offsets[row + 1u]; ++b) {
+      if (matrix.column_indices[a] == matrix.column_indices[b]) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 dec3d::mesh::SphericalGeometryMetadata BuildFullSphereGeometry(
     const dec3d::transport::DiffusionGridLayout& layout,
     double r_outer) {
@@ -501,6 +516,38 @@ int main() {
     }
 
     {
+      const auto layout = Layout(4, 4, 1);
+      auto problem = BuildPatchProblem(layout, 0.1, 1.0, 2.0, 0.0, 0.0, 4.0);
+      const auto assembly = AssembleGenericImplicitDiffusionSystem(problem);
+      DEC3D_CHECK(assembly.success);
+      DEC3D_CHECK_EQ(assembly.row_count, std::size_t{16});
+      DEC3D_CHECK_EQ(assembly.phi_coupling_count, std::size_t{0});
+      DEC3D_CHECK(!assembly.phi_neighbor_loop_executed);
+      DEC3D_CHECK_EQ(assembly.phi_self_neighbor_attempt_count, std::size_t{0});
+      DEC3D_CHECK_EQ(assembly.duplicate_column_row_count, std::size_t{0});
+      DEC3D_CHECK_EQ(assembly.interior_row_width5_count, std::size_t{4});
+      DEC3D_CHECK(assembly.report_line.find("phi_coupling_count=0") !=
+                  std::string::npos);
+      DEC3D_CHECK(assembly.report_line.find("phi_neighbor_loop_executed=false") !=
+                  std::string::npos);
+      DEC3D_CHECK(assembly.report_line.find("phi_self_neighbor_attempt_count=0") !=
+                  std::string::npos);
+      DEC3D_CHECK(assembly.report_line.find("duplicate_column_row_count=0") !=
+                  std::string::npos);
+      DEC3D_CHECK(assembly.report_line.find(
+                      "axisymmetric_interior_row_width5_count=4") !=
+                  std::string::npos);
+      const std::size_t interior_row = TestLinearIndex(layout, 1u, 1u, 0u);
+      DEC3D_CHECK_EQ(
+          assembly.matrix.row_offsets[interior_row + 1u] -
+              assembly.matrix.row_offsets[interior_row],
+          std::size_t{5});
+      for (std::size_t row = 0; row < assembly.row_count; ++row) {
+        DEC3D_CHECK(!RowHasDuplicateColumns(assembly.matrix, row));
+      }
+    }
+
+    {
       auto problem = BuildPatchProblem(Layout(1, 1, 1), 0.1, 1.0, 0.0, 0.0, 0.0, 1.0);
       problem.coefficient_A(0, 0, 0) = -1.0;
       const auto assembly = AssembleGenericImplicitDiffusionSystem(problem);
@@ -764,6 +811,17 @@ int main() {
       auto assembly = AssembleGenericImplicitDiffusionSystem(problem);
       DEC3D_CHECK(assembly.success);
       const std::string token = "marshak_boundary_used=false";
+      const auto pos = assembly.report_line.find(token);
+      DEC3D_CHECK(pos != std::string::npos);
+      assembly.report_line.erase(pos, token.size());
+      DEC3D_CHECK(!ValidateGenericDiffusionAssemblyDiagnostics(assembly));
+    }
+
+    {
+      auto problem = BuildPatchProblem(Layout(1, 1, 1), 0.1, 1.0, 0.0, 0.0, 0.0, 1.0);
+      auto assembly = AssembleGenericImplicitDiffusionSystem(problem);
+      DEC3D_CHECK(assembly.success);
+      const std::string token = "phi_self_neighbor_attempt_count=";
       const auto pos = assembly.report_line.find(token);
       DEC3D_CHECK(pos != std::string::npos);
       assembly.report_line.erase(pos, token.size());

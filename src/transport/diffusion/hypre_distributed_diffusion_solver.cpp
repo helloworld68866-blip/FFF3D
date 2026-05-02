@@ -937,6 +937,59 @@ struct DHalo {
   return matrix;
 }
 
+[[nodiscard]] std::size_t CountLocalDuplicateColumnRows(
+    const DistributedLocalCsrMatrix& matrix) noexcept {
+  std::size_t count = 0u;
+  for (std::size_t local_row = 0u;
+       local_row + 1u < matrix.row_offsets.size();
+       ++local_row) {
+    bool duplicate = false;
+    for (std::size_t a = matrix.row_offsets[local_row];
+         a < matrix.row_offsets[local_row + 1u];
+         ++a) {
+      for (std::size_t b = a + 1u; b < matrix.row_offsets[local_row + 1u]; ++b) {
+        duplicate = duplicate || matrix.column_indices[a] == matrix.column_indices[b];
+      }
+    }
+    if (duplicate) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+[[nodiscard]] std::size_t CountLocalAxisymmetricInteriorRowWidth5(
+    const DistributedDiffusionRowOwnership& ownership,
+    const DistributedLocalCsrMatrix& matrix) noexcept {
+  if (ownership.global_phi_cells != 1u ||
+      ownership.global_radial_cells < 3u ||
+      ownership.global_theta_cells < 3u ||
+      !matrix.is_shape_complete()) {
+    return 0u;
+  }
+
+  std::size_t count = 0u;
+  for (std::size_t local_row = 0u; local_row < ownership.local_row_count; ++local_row) {
+    const std::size_t global_row = ownership.local_row_begin + local_row;
+    const std::size_t global_radial =
+        global_row / (ownership.global_theta_cells * ownership.global_phi_cells);
+    const std::size_t theta =
+        (global_row / ownership.global_phi_cells) % ownership.global_theta_cells;
+    if (global_radial == 0u ||
+        global_radial + 1u == ownership.global_radial_cells ||
+        theta == 0u ||
+        theta + 1u == ownership.global_theta_cells) {
+      continue;
+    }
+    const std::size_t width =
+        matrix.row_offsets[local_row + 1u] - matrix.row_offsets[local_row];
+    if (width == 5u) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 [[nodiscard]] std::string BuildDistributedAssemblyReport(
     const DistributedGenericDiffusionAssemblyResult& result) {
   const auto& ownership = result.ownership;
@@ -968,6 +1021,20 @@ struct DHalo {
       << "; global_off_rank_column_count=" << result.global_off_rank_column_count
       << "; local_radial_seam_coupling_count=" << result.local_radial_seam_coupling_count
       << "; global_radial_seam_coupling_count=" << result.global_radial_seam_coupling_count
+      << "; local_phi_coupling_count=" << result.local_phi_coupling_count
+      << "; global_phi_coupling_count=" << result.global_phi_coupling_count
+      << "; global_phi_neighbor_loop_executed="
+      << (result.global_phi_neighbor_loop_executed ? "true" : "false")
+      << "; local_phi_self_neighbor_attempt_count="
+      << result.local_phi_self_neighbor_attempt_count
+      << "; global_phi_self_neighbor_attempt_count="
+      << result.global_phi_self_neighbor_attempt_count
+      << "; local_duplicate_column_row_count="
+      << result.local_duplicate_column_row_count
+      << "; global_duplicate_column_row_count="
+      << result.global_duplicate_column_row_count
+      << "; global_axisymmetric_interior_row_width5_count="
+      << result.global_axisymmetric_interior_row_width5_count
       << "; coefficient_D_halo_lower_received="
       << (result.coefficient_D_halo_lower_received ? "true" : "false")
       << "; coefficient_D_halo_upper_received="
@@ -1457,6 +1524,7 @@ DistributedGenericDiffusionAssemblyResult AssembleDistributedGenericDiffusionSys
     }
 
     if (ownership.global_phi_cells > 1u) {
+      result.local_phi_neighbor_loop_executed = true;
       for (std::size_t t = 0; t < ownership.global_theta_cells; ++t) {
         for (std::size_t p = 0; p < ownership.global_phi_cells; ++p) {
           if (ownership.global_phi_cells == 2u && p == 1u) {
@@ -1469,11 +1537,18 @@ DistributedGenericDiffusionAssemblyResult AssembleDistributedGenericDiffusionSys
           const double area =
               geometry_metrics.phi_face_area[PhiFaceMetricIndex(ownership, gr, t)];
           const double conductance = area * PhiInterfaceD(problem, lr, t, p) / distance;
+          const std::size_t lhs = GlobalRow(ownership, gr, t, p);
+          const std::size_t rhs = GlobalRow(ownership, gr, t, next_phi);
+          if (lhs == rhs) {
+            ++result.local_phi_self_neighbor_attempt_count;
+          } else if (conductance != 0.0) {
+            ++result.local_phi_coupling_count;
+          }
           AddOwnedPairConductance(
               rows,
               ownership,
-              GlobalRow(ownership, gr, t, p),
-              GlobalRow(ownership, gr, t, next_phi),
+              lhs,
+              rhs,
               conductance,
               false,
               result);
@@ -1561,21 +1636,48 @@ DistributedGenericDiffusionAssemblyResult AssembleDistributedGenericDiffusionSys
   result.local_matrix = BuildLocalCsr(rows, ownership);
   result.pole_metric_mode = problem.pole_metric_mode;
   result.local_nonzero_count = result.local_matrix.values.size();
-  unsigned long long local_counts[3] = {
+  result.local_duplicate_column_row_count =
+      CountLocalDuplicateColumnRows(result.local_matrix);
+  result.local_axisymmetric_interior_row_width5_count =
+      CountLocalAxisymmetricInteriorRowWidth5(ownership, result.local_matrix);
+  unsigned long long local_counts[8] = {
       static_cast<unsigned long long>(result.local_nonzero_count),
       static_cast<unsigned long long>(result.local_off_rank_column_count),
-      static_cast<unsigned long long>(result.local_radial_seam_coupling_count)};
-  unsigned long long global_counts[3] = {0ull, 0ull, 0ull};
+      static_cast<unsigned long long>(result.local_radial_seam_coupling_count),
+      static_cast<unsigned long long>(result.local_phi_coupling_count),
+      static_cast<unsigned long long>(result.local_phi_self_neighbor_attempt_count),
+      static_cast<unsigned long long>(result.local_duplicate_column_row_count),
+      static_cast<unsigned long long>(result.local_axisymmetric_interior_row_width5_count),
+      0ull};
+  unsigned long long global_counts[8] = {};
   MPI_Allreduce(
       local_counts,
       global_counts,
-      3,
+      8,
       MPI_UNSIGNED_LONG_LONG,
       MPI_SUM,
       ownership.communicator);
   result.global_nonzero_count = static_cast<std::size_t>(global_counts[0]);
   result.global_off_rank_column_count = static_cast<std::size_t>(global_counts[1]);
   result.global_radial_seam_coupling_count = static_cast<std::size_t>(global_counts[2]);
+  result.global_phi_coupling_count = static_cast<std::size_t>(global_counts[3]);
+  result.global_phi_self_neighbor_attempt_count =
+      static_cast<std::size_t>(global_counts[4]);
+  result.global_duplicate_column_row_count =
+      static_cast<std::size_t>(global_counts[5]);
+  result.global_axisymmetric_interior_row_width5_count =
+      static_cast<std::size_t>(global_counts[6]);
+  int local_phi_neighbor_loop =
+      result.local_phi_neighbor_loop_executed ? 1 : 0;
+  int global_phi_neighbor_loop = 0;
+  MPI_Allreduce(
+      &local_phi_neighbor_loop,
+      &global_phi_neighbor_loop,
+      1,
+      MPI_INT,
+      MPI_MAX,
+      ownership.communicator);
+  result.global_phi_neighbor_loop_executed = global_phi_neighbor_loop != 0;
   int local_origin_used = result.local_origin_remap_used ? 1 : 0;
   int local_pole_used = result.local_pole_remap_used ? 1 : 0;
   int global_origin_used = 0;
@@ -2162,6 +2264,14 @@ bool ValidateDistributedGenericDiffusionAssemblyDiagnostics(
          Contains(line, "global_off_rank_column_count=") &&
          Contains(line, "local_radial_seam_coupling_count=") &&
          Contains(line, "global_radial_seam_coupling_count=") &&
+         Contains(line, "local_phi_coupling_count=") &&
+         Contains(line, "global_phi_coupling_count=") &&
+         Contains(line, "global_phi_neighbor_loop_executed=") &&
+         Contains(line, "local_phi_self_neighbor_attempt_count=") &&
+         Contains(line, "global_phi_self_neighbor_attempt_count=") &&
+         Contains(line, "local_duplicate_column_row_count=") &&
+         Contains(line, "global_duplicate_column_row_count=") &&
+         Contains(line, "global_axisymmetric_interior_row_width5_count=") &&
          Contains(line, "coefficient_D_halo_lower_received=") &&
          Contains(line, "coefficient_D_halo_upper_received=") &&
          Contains(line, "origin_remap_used=") &&

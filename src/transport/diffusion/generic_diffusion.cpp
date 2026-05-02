@@ -398,6 +398,25 @@ void AddConductance(
   AddMatrixEntry(rows, rhs, lhs, -conductance);
 }
 
+void AddPhiConductance(
+    RowAccumulator& rows,
+    std::size_t lhs,
+    std::size_t rhs,
+    double conductance,
+    GenericDiffusionAssemblyResult& result) {
+  result.phi_neighbor_loop_executed = true;
+  if (lhs == rhs) {
+    ++result.phi_self_neighbor_attempt_count;
+    return;
+  }
+  if (conductance == 0.0) {
+    return;
+  }
+
+  ++result.phi_coupling_count;
+  AddConductance(rows, lhs, rhs, conductance);
+}
+
 void AddMappedConductance(
     const GenericDiffusionProblem& problem,
     RowAccumulator& rows,
@@ -498,6 +517,46 @@ void AddMappedConductance(
   return count;
 }
 
+[[nodiscard]] std::size_t CountDuplicateColumnRows(
+    const SparseMatrixCsr& matrix) noexcept {
+  std::size_t count = 0u;
+  for (std::size_t row = 0; row < matrix.row_count; ++row) {
+    bool duplicate = false;
+    for (std::size_t a = matrix.row_offsets[row];
+         a < matrix.row_offsets[row + 1u];
+         ++a) {
+      for (std::size_t b = a + 1u; b < matrix.row_offsets[row + 1u]; ++b) {
+        duplicate = duplicate || matrix.column_indices[a] == matrix.column_indices[b];
+      }
+    }
+    if (duplicate) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+[[nodiscard]] std::size_t CountAxisymmetricInteriorRowWidth5(
+    const DiffusionGridLayout& layout,
+    const SparseMatrixCsr& matrix) noexcept {
+  if (layout.phi_cells != 1u || layout.radial_cells < 3u ||
+      layout.theta_cells < 3u || !matrix.is_shape_complete()) {
+    return 0u;
+  }
+
+  std::size_t count = 0u;
+  for (std::size_t radial = 1u; radial + 1u < layout.radial_cells; ++radial) {
+    for (std::size_t theta = 1u; theta + 1u < layout.theta_cells; ++theta) {
+      const std::size_t row = LinearIndex(layout, radial, theta, 0u);
+      const std::size_t width = matrix.row_offsets[row + 1u] - matrix.row_offsets[row];
+      if (width == 5u) {
+        ++count;
+      }
+    }
+  }
+  return count;
+}
+
 void FillScalarOldFlat(
     const GenericDiffusionProblem& problem,
     GenericDiffusionAssemblyResult& result) {
@@ -553,9 +612,14 @@ void PublishMarshakStats(
   result.marshak_max_abs_diagonal_loss = stats.max_abs_diagonal_loss;
 }
 
-void FinalizeMatrixDiagnostics(GenericDiffusionAssemblyResult& result) {
+void FinalizeMatrixDiagnostics(
+    GenericDiffusionAssemblyResult& result,
+    const DiffusionGridLayout& layout) {
   result.row_count = result.matrix.row_count;
   result.nonzero_count = result.matrix.values.size();
+  result.duplicate_column_row_count = CountDuplicateColumnRows(result.matrix);
+  result.interior_row_width5_count =
+      CountAxisymmetricInteriorRowWidth5(layout, result.matrix);
   result.min_diagonal = std::numeric_limits<double>::infinity();
   result.max_abs_offdiagonal_row_sum = 0.0;
   result.max_rhs_abs = 0.0;
@@ -609,6 +673,13 @@ void FinalizeMatrixDiagnostics(GenericDiffusionAssemblyResult& result) {
       << "; row_count=" << result.row_count
       << "; nonzero_count=" << result.nonzero_count
       << "; boundary_row_count=" << result.boundary_row_count
+      << "; phi_coupling_count=" << result.phi_coupling_count
+      << "; phi_neighbor_loop_executed="
+      << (result.phi_neighbor_loop_executed ? "true" : "false")
+      << "; phi_self_neighbor_attempt_count=" << result.phi_self_neighbor_attempt_count
+      << "; duplicate_column_row_count=" << result.duplicate_column_row_count
+      << "; axisymmetric_interior_row_width5_count="
+      << result.interior_row_width5_count
       << "; origin_boundary_touched=" << (origin_touched ? "true" : "false")
       << "; pole_boundary_touched=" << (pole_touched ? "true" : "false")
       << "; outer_boundary_policy=" << ToString(problem.boundary_policy.outer_radial)
@@ -858,7 +929,7 @@ void FinalizeMatrixDiagnostics(GenericDiffusionAssemblyResult& result) {
   }
 
   result.boundary_row_count = result.row_count;
-  FinalizeMatrixDiagnostics(result);
+  FinalizeMatrixDiagnostics(result, problem.layout);
   result.report_line = BuildAssemblyReport(
       problem,
       result,
@@ -872,7 +943,8 @@ void FinalizeMatrixDiagnostics(GenericDiffusionAssemblyResult& result) {
 
 void AssembleInteriorConductances(
     const GenericDiffusionProblem& problem,
-    RowAccumulator& rows) {
+    RowAccumulator& rows,
+    GenericDiffusionAssemblyResult& result) {
   const auto& layout = problem.layout;
 
   for (std::size_t radial = 0; radial + 1u < layout.radial_cells; ++radial) {
@@ -925,7 +997,7 @@ void AssembleInteriorConductances(
         const double distance = radius * sin_theta * dphi;
         const double area = PhiFaceArea(problem.geometry, radial, theta);
         const double d_face = PhiInterfaceD(problem, radial, theta, phi);
-        AddConductance(rows, left, right, area * d_face / distance);
+        AddPhiConductance(rows, left, right, area * d_face / distance, result);
       }
     }
   }
@@ -1225,7 +1297,7 @@ GenericDiffusionAssemblyResult AssembleGenericImplicitDiffusionSystem(
       problem.boundary_policy.theta_lower == DiffusionBoundaryKind::scalar_pole_remap_required &&
           problem.boundary_policy.theta_upper == DiffusionBoundaryKind::scalar_pole_remap_required);
   RowAccumulator rows(problem.layout.cell_count());
-  AssembleInteriorConductances(problem, rows);
+  AssembleInteriorConductances(problem, rows, result);
   RemapAssemblyStats remap_stats;
   AssembleScalarRemapConductances(problem, origin_touched, pole_touched, rows, remap_stats);
   PublishRemapStats(result, origin_touched, pole_touched, remap_stats);
@@ -1253,7 +1325,7 @@ GenericDiffusionAssemblyResult AssembleGenericImplicitDiffusionSystem(
     }
   }
 
-  FinalizeMatrixDiagnostics(result);
+  FinalizeMatrixDiagnostics(result, problem.layout);
   result.report_line = BuildAssemblyReport(
       problem,
       result,
@@ -1373,6 +1445,11 @@ bool ValidateGenericDiffusionAssemblyDiagnostics(
          Contains(line, "row_count=") &&
          Contains(line, "nonzero_count=") &&
          Contains(line, "boundary_row_count=") &&
+         Contains(line, "phi_coupling_count=") &&
+         Contains(line, "phi_neighbor_loop_executed=") &&
+         Contains(line, "phi_self_neighbor_attempt_count=") &&
+         Contains(line, "duplicate_column_row_count=") &&
+         Contains(line, "axisymmetric_interior_row_width5_count=") &&
          Contains(line, "origin_boundary_touched=") &&
          Contains(line, "pole_boundary_touched=") &&
          Contains(line, "outer_boundary_policy=") &&
