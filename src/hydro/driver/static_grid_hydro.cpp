@@ -3493,7 +3493,7 @@ struct MacroGhostBootstrap {
           "macro-zoning radial origin ghost remap requires at least ghost_layers interior radial cells";
       return false;
     }
-    if ((map.fine_phi_cells % 2u) != 0u) {
+    if (map.fine_phi_cells != 1u && (map.fine_phi_cells % 2u) != 0u) {
       failure_reason =
           "macro-zoning radial origin ghost remap requires an even phi cell count";
       return false;

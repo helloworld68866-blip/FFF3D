@@ -280,6 +280,108 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
     DEC3D_CHECK(noh_result.report_line.find(key) != std::string::npos);
   }
 
+  const auto axisym_root = root / "axisymmetric";
+  const auto axisym_deck = axisym_root / "case_axisymmetric.in";
+  const auto axisym_profile = axisym_root / "case_axisymmetric.pro";
+  const auto axisym_output = axisym_root / "output";
+  WriteText(axisym_deck, R"ini(
+[run] # run
+case_name = p5_axisymmetric_h_only # name
+phase = P5 # phase
+stage_order = H # H-only runtime validation
+step_count = 1 # one hydro step
+dt_mode = hydro_relaxed # hydro CFL dt
+cfl = 0.4 # CFL
+output_dir = AXISYM_OUTPUT_ROOT_REPLACED # output dir
+[mesh] # mesh
+geometry = spherical # geometry
+dimensionality = axisymmetric_2d # full-azimuth axisymmetric mode
+radial_cells = 8 # radial
+theta_cells = 4 # theta
+phi_cells = 1 # full azimuth represented by one phi cell
+radial_min_cm = 0.0 # inner radius
+radial_max_cm = 1.0e-2 # outer radius
+theta_min = 0.0 # theta min
+theta_max = 3.141592653589793 # theta max
+phi_min = 0.0 # phi min
+phi_max = 6.283185307179586 # phi max
+moving_mesh = false # fixed mesh
+macro_zoning = true # macro path must not request phi coarse sweep
+[initial_condition] # init
+profile_interpolation = linear # interpolation
+profile_radius_unit = um # unit
+outside_profile_policy = hard_fail # coverage
+[physics] # physics
+enable_hydro = true # H
+enable_thermal = false # no T
+enable_equilibration = false # no E
+enable_radiation = false # no R
+enable_alpha = false # no A
+[radiation] # radiation placeholder
+group_mode = explicit_frequency_groups # groups
+group_edges_eV = 1,10 # one placeholder group
+opacity_provider = tops_dt_tabulated # provider placeholder
+radiation_initialization = zero # no radiation energy
+radiation_initial_blackbody_scale = 1.0 # scale
+boundary_model = thesis_marshak_vacuum # placeholder
+flux_limiter = harmonic_eq_5_209 # placeholder
+[thermal] # thermal placeholder
+kappa_model = lee_more_with_degeneracy # placeholder
+electron_flux_limiter = minmax_old_time_face_effective_kappa # placeholder
+[alpha] # alpha placeholder
+composition_model = equimolar_dt_from_p2_recovery # placeholder
+reactivity_model = bosch_hale_dt # placeholder
+alpha_initialization = zero # no alpha
+[boundaries] # boundaries
+inner_radial = scalar_origin_remap_required # origin
+outer_radial = neumann_zero_flux # outer
+theta = scalar_pole_remap_required # poles
+phi = periodic # periodic phi metadata
+[output] # output
+write_profiles_every = 0 # legacy disabled
+write_diagnostics_every = 0 # legacy disabled
+write_restart_every = 0 # legacy disabled
+write_dec3d_out_every_steps = 1 # runtime log
+field_checkpoint_every_steps = 0 # no field snaps
+field_checkpoint_interval_s = 0.0 # no time snaps
+field_checkpoint_prefix = fields # field prefix
+field_checkpoint_format = csv3d # field format
+restart_checkpoint_every_steps = 0 # no restart
+restart_checkpoint_interval_s = 0.0 # no restart time trigger
+restart_checkpoint_prefix = restart # restart prefix
+restart_checkpoint_format = dec3d_restart_text # restart format
+)ini");
+
+  auto axisym_deck_text = ReadText(axisym_deck);
+  const auto axisym_marker = std::string("AXISYM_OUTPUT_ROOT_REPLACED");
+  axisym_deck_text.replace(axisym_deck_text.find(axisym_marker),
+                           axisym_marker.size(),
+                           axisym_output.generic_string());
+  WriteText(axisym_deck, axisym_deck_text);
+
+  WriteText(axisym_profile, R"pro(
+r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radiation_scale
+0.0 10.0 1.0 1.0 -1.0e6 0.0 0.0 0.0 1.0
+100.0 10.0 1.0 1.0 -1.0e6 0.0 0.0 0.0 1.0
+)pro");
+
+  const std::vector<std::string> axisym_argv{
+      "dec3d.exe",
+      "-input",
+      axisym_deck.string(),
+      "-profile",
+      axisym_profile.string()};
+  const auto axisym_result = dec3d::app::RunDec3DCommandLine(axisym_argv);
+  DEC3D_CHECK(axisym_result.exit_code == 0);
+  DEC3D_CHECK(axisym_result.report_line.find("mesh_dimensionality=axisymmetric_2d") !=
+              std::string::npos);
+  DEC3D_CHECK(axisym_result.report_line.find("active_hydro_directions=r,theta") !=
+              std::string::npos);
+  DEC3D_CHECK(axisym_result.report_line.find("phi_sweep_executed=false") !=
+              std::string::npos);
+  DEC3D_CHECK(axisym_result.report_line.find("h_hydro_phi_sweep_wall_s=0") !=
+              std::string::npos);
+
   std::filesystem::remove_all(root);
   return 0;
 }

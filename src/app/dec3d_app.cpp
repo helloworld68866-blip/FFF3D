@@ -369,6 +369,15 @@ struct RuntimeRadialGhostOverrideResult {
   options.use_macro_ale_direct_moving_face_hllc = config.mesh.moving_mesh;
   options.enable_radiation_hydro_terms = config.physics.enable_radiation;
   options.enable_alpha_hydro_terms = config.physics.enable_alpha;
+  if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality)) {
+    options.apply_radial_sweep = true;
+    options.apply_theta_sweep = true;
+    options.apply_phi_sweep = false;
+    options.macro_zoning_use_phi_ppm = false;
+    options.apply_radial_ale_flux_correction = false;
+    options.request_radial_ale_proposal = false;
+    options.use_macro_ale_direct_moving_face_hllc = false;
+  }
   return options;
 }
 
@@ -1082,16 +1091,12 @@ void GatherLocalStateToRoot(
 [[nodiscard]] RuntimeStageResult ExecuteHydroStage(
     dec3d::state::CanonicalState& state,
     const dec3d::mesh::SphericalGeometryMetadata& geometry,
+    const dec3d::io::InputDeckConfig& config,
     double dt_s,
     std::uint64_t step,
-    double time_s,
-    bool enable_radiation_hydro_terms,
-    bool enable_alpha_hydro_terms) {
+    double time_s) {
   dec3d::hydro::HydroOperator hydro;
-  dec3d::hydro::StaticGridHydroOptions options;
-  options.use_ppm_reconstruction = false;
-  options.enable_radiation_hydro_terms = enable_radiation_hydro_terms;
-  options.enable_alpha_hydro_terms = enable_alpha_hydro_terms;
+  auto options = RuntimeHydroOptions(config);
   hydro.SetStaticGridOptions(options);
 
   dec3d::core::StageContext context;
@@ -1128,10 +1133,12 @@ void GatherLocalStateToRoot(
          << "; stage_backend=hydro_operator"
          << "; updated_fields_mask=" << hydro_result.updated_fields
          << "; alpha_hydro_terms_report_present=true"
-         << "; alpha_hydro_terms_enabled=" << (enable_alpha_hydro_terms ? "true" : "false")
+         << "; alpha_hydro_terms_enabled="
+         << (config.physics.enable_alpha ? "true" : "false")
          << "; alpha_hydro_coupling_mode=hydro_hllc_species_scalar_alpha_pressure"
          << "; radiation_hydro_terms_report_present=true"
-         << "; radiation_hydro_terms_enabled=" << (enable_radiation_hydro_terms ? "true" : "false")
+         << "; radiation_hydro_terms_enabled="
+         << (config.physics.enable_radiation ? "true" : "false")
          << "; radiation_hydro_coupling_mode=hydro_hllc_species_scalar_radiation_pressure"
          << "; h_hydro_advance_wall_s=" << result.hydro_advance_wall_s;
   AppendHydroAdvanceTimingFields(report, result);
@@ -2167,8 +2174,7 @@ struct RuntimeStartPoint {
     }
     const auto dt_timer = std::chrono::steady_clock::now();
     dec3d::hydro::HydroOperator hydro_for_dt;
-    dec3d::hydro::StaticGridHydroOptions hydro_options;
-    hydro_options.use_ppm_reconstruction = false;
+    auto hydro_options = RuntimeHydroOptions(config);
     hydro_for_dt.SetStaticGridOptions(hydro_options);
     dec3d::core::StageContext dt_context;
     dt_context.time_s = time_s;
@@ -2211,10 +2217,12 @@ struct RuntimeStartPoint {
       RuntimeStageResult stage_result;
       switch (stage) {
         case 'H':
-          stage_result = ExecuteHydroStage(state, geometry, dt_s,
-                                           static_cast<std::uint64_t>(step_index), time_s,
-                                           config.physics.enable_radiation,
-                                           config.physics.enable_alpha);
+          stage_result = ExecuteHydroStage(state,
+                                           geometry,
+                                           config,
+                                           dt_s,
+                                           static_cast<std::uint64_t>(step_index),
+                                           time_s);
           break;
         case 'T':
           stage_result = ExecuteThermalStage(state, geometry, config, dt_s);
@@ -2275,6 +2283,14 @@ struct RuntimeStartPoint {
          << "; runtime_stage_backend=serial_callable_runtime"
          << "; runtime_steps_executed=" << loop.steps_executed
          << "; final_time_s=" << loop.final_time_s
+         << "; mesh_dimensionality=" << dec3d::io::ToString(config.mesh.dimensionality)
+         << "; active_hydro_directions="
+         << (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) ? "r,theta"
+                                                                     : "r,theta,phi")
+         << "; phi_sweep_executed="
+         << (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality)
+                 ? "false"
+                 : (loop.h_hydro_phi_sweep_wall_s > 0.0 ? "true" : "false"))
          << "; target_time_trigger_enabled="
          << (TargetTimeEnabled(config) ? "true" : "false")
          << "; target_time_s=" << config.run.target_time_s
@@ -2664,6 +2680,14 @@ struct RuntimeStartPoint {
          << "; runtime_stage_backend=mpi_hypre_callable_runtime"
          << "; runtime_steps_executed=" << loop.steps_executed
          << "; final_time_s=" << loop.final_time_s
+         << "; mesh_dimensionality=" << dec3d::io::ToString(config.mesh.dimensionality)
+         << "; active_hydro_directions="
+         << (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) ? "r,theta"
+                                                                     : "r,theta,phi")
+         << "; phi_sweep_executed="
+         << (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality)
+                 ? "false"
+                 : (loop.h_hydro_phi_sweep_wall_s > 0.0 ? "true" : "false"))
          << "; target_time_trigger_enabled="
          << (TargetTimeEnabled(config) ? "true" : "false")
          << "; target_time_s=" << config.run.target_time_s
