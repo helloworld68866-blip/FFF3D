@@ -124,6 +124,8 @@ struct RuntimeStageResult {
   std::size_t global_phi_coupling_count{0u};
   std::size_t global_duplicate_column_row_count{0u};
   bool global_matrix_diagnostics_present{false};
+  bool hydro_phi_sweep_evidence_present{false};
+  bool hydro_phi_sweep_executed{false};
   std::string report_line;
   std::string failure_reason;
   std::string failure_diagnostics;
@@ -809,6 +811,10 @@ void FillGhostStateFromExchanges(
            << "; radiation_hydro_terms_enabled="
            << (config.physics.enable_radiation ? "true" : "false")
            << "; radiation_hydro_coupling_mode=hydro_hllc_species_scalar_radiation_pressure"
+           << "; hydro_phi_sweep_evidence_present="
+           << (result.hydro_phi_sweep_evidence_present ? "true" : "false")
+           << "; hydro_phi_sweep_executed="
+           << (result.hydro_phi_sweep_executed ? "true" : "false")
            << "; nested_hydro_report={" << hydro.diagnostics.report_line << "}";
     result.report_line = report.str();
     return result;
@@ -901,6 +907,10 @@ void FillGhostStateFromExchanges(
          << "; radiation_hydro_terms_enabled="
          << (config.physics.enable_radiation ? "true" : "false")
          << "; radiation_hydro_coupling_mode=hydro_hllc_species_scalar_radiation_pressure"
+         << "; hydro_phi_sweep_evidence_present="
+         << (result.hydro_phi_sweep_evidence_present ? "true" : "false")
+         << "; hydro_phi_sweep_executed="
+         << (result.hydro_phi_sweep_executed ? "true" : "false")
          << "; nested_hydro_report={" << hydro.report_line << "}"
          << "; rank=" << rank;
   result.report_line = report.str();
@@ -1177,6 +1187,10 @@ void GatherLocalStateToRoot(
          << "; radiation_hydro_terms_enabled="
          << (config.physics.enable_radiation ? "true" : "false")
          << "; radiation_hydro_coupling_mode=hydro_hllc_species_scalar_radiation_pressure"
+         << "; hydro_phi_sweep_evidence_present="
+         << (result.hydro_phi_sweep_evidence_present ? "true" : "false")
+         << "; hydro_phi_sweep_executed="
+         << (result.hydro_phi_sweep_executed ? "true" : "false")
          << "; h_hydro_advance_wall_s=" << result.hydro_advance_wall_s;
   AppendHydroAdvanceTimingFields(report, result);
   result.report_line = report.str();
@@ -1648,6 +1662,9 @@ struct RuntimeLoopResult {
   std::size_t global_phi_coupling_count{0u};
   std::size_t global_duplicate_column_row_count{0u};
   bool global_matrix_diagnostics_present{false};
+  bool hydro_phi_sweep_evidence_present{false};
+  bool hydro_phi_sweep_executed{false};
+  std::string axisymmetric_stage_invariant_reports;
   std::string report_line;
   std::string failure_reason;
   std::string failure_diagnostics;
@@ -1735,6 +1752,28 @@ void AppendAxisymmetricInvariantDiagnostics(
                                                                                    : "false");
 }
 
+[[nodiscard]] std::string BuildAxisymmetricStageInvariantReport(
+    char stage,
+    const AxisymmetricInvariantSummary& axisym) {
+  std::ostringstream report;
+  report << std::setprecision(17)
+         << "stage_id=" << stage
+         << "; axisymmetric_stage_invariant_ok=" << (axisym.ok ? "true" : "false")
+         << "; stage_max_abs_mom_phi=" << axisym.max_abs_mom_phi
+         << "; stage_max_abs_v_phi=" << axisym.max_abs_v_phi
+         << "; stage_axisymmetric_mom_phi_tol=" << axisym.mom_phi_tol
+         << "; stage_axisymmetric_v_phi_tol=" << axisym.v_phi_tol;
+  return report.str();
+}
+
+void AppendAxisymmetricStageInvariantReport(
+    RuntimeLoopResult& loop,
+    char stage,
+    const AxisymmetricInvariantSummary& axisym) {
+  loop.axisymmetric_stage_invariant_reports +=
+      "{" + BuildAxisymmetricStageInvariantReport(stage, axisym) + "}";
+}
+
 [[nodiscard]] double ElapsedSecondsSince(
     const std::chrono::steady_clock::time_point& start) {
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -1793,6 +1832,35 @@ void AppendAxisymmetricInvariantDiagnostics(
   return true;
 }
 
+[[nodiscard]] bool ParseRuntimeBoolField(
+    std::string_view report_line,
+    std::string_view key,
+    bool* value_out) {
+  if (value_out == nullptr) {
+    return false;
+  }
+  const std::string needle = std::string(key) + "=";
+  const auto key_position = report_line.find(needle);
+  if (key_position == std::string_view::npos) {
+    return false;
+  }
+  const auto value_begin = key_position + needle.size();
+  auto value_end = report_line.find(';', value_begin);
+  if (value_end == std::string_view::npos) {
+    value_end = report_line.size();
+  }
+  const auto raw_value = report_line.substr(value_begin, value_end - value_begin);
+  if (raw_value == "true") {
+    *value_out = true;
+    return true;
+  }
+  if (raw_value == "false") {
+    *value_out = false;
+    return true;
+  }
+  return false;
+}
+
 void AddHydroAdvanceTimingFromReport(RuntimeStageResult& result,
                                      std::string_view report_line) {
   const auto add_field = [&](std::string_view key, double& target) {
@@ -1822,6 +1890,11 @@ void AddHydroAdvanceTimingFromReport(RuntimeStageResult& result,
   add_field("h_hydro_source_wall_s", result.hydro_source_wall_s);
   add_field("h_hydro_budget_wall_s", result.hydro_budget_wall_s);
   add_field("h_hydro_diagnostics_wall_s", result.hydro_diagnostics_wall_s);
+  bool phi_executed = false;
+  if (ParseRuntimeBoolField(report_line, "phi", &phi_executed)) {
+    result.hydro_phi_sweep_evidence_present = true;
+    result.hydro_phi_sweep_executed = result.hydro_phi_sweep_executed || phi_executed;
+  }
 }
 
 void AddHydroAdvanceTimingFromDiagnostics(
@@ -1854,6 +1927,8 @@ void AddHydroAdvanceTimingFromStaticGrid(
   result.hydro_source_wall_s += hydro.timing_source_wall_s;
   result.hydro_budget_wall_s += hydro.timing_budget_wall_s;
   result.hydro_diagnostics_wall_s += hydro.timing_diagnostics_wall_s;
+  result.hydro_phi_sweep_evidence_present = true;
+  result.hydro_phi_sweep_executed = result.hydro_phi_sweep_executed || hydro.phi_executed;
 }
 
 void AppendHydroAdvanceTimingFields(std::ostringstream& report,
@@ -1932,6 +2007,11 @@ void AddRuntimeStagePerformance(RuntimeLoopResult& loop,
       loop.h_hydro_diagnostics_wall_s += result.hydro_diagnostics_wall_s;
       loop.h_writeback_wall_s += result.hydro_writeback_wall_s;
       loop.h_global_gate_wall_s += result.hydro_global_gate_wall_s;
+      if (result.hydro_phi_sweep_evidence_present) {
+        loop.hydro_phi_sweep_evidence_present = true;
+        loop.hydro_phi_sweep_executed =
+            loop.hydro_phi_sweep_executed || result.hydro_phi_sweep_executed;
+      }
       break;
     case 'T':
       loop.t_coefficient_provider_wall_s += result.coefficient_provider_wall_s;
@@ -2413,6 +2493,36 @@ struct RuntimeStartPoint {
         loop.failure_diagnostics = stage_result.failure_diagnostics;
         return loop;
       }
+      if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) && stage == 'H') {
+        if (!stage_result.hydro_phi_sweep_evidence_present) {
+          loop.failure_reason = "axisymmetric hydro phi sweep evidence missing";
+          loop.failure_diagnostics =
+              "diagnostic_id=p5.runtime.loop.failure; failure_reason=" +
+              loop.failure_reason;
+          return loop;
+        }
+        if (stage_result.hydro_phi_sweep_executed) {
+          loop.failure_reason = "axisymmetric hydro phi sweep executed";
+          loop.failure_diagnostics =
+              "diagnostic_id=p5.runtime.loop.failure; failure_reason=" +
+              loop.failure_reason;
+          return loop;
+        }
+      }
+      if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality)) {
+        const auto stage_axisym = EvaluateAxisymmetricInvariants(state);
+        AppendAxisymmetricStageInvariantReport(loop, stage, stage_axisym);
+        if (!stage_axisym.ok) {
+          loop.failure_reason =
+              std::string("axisymmetric invariant violated after stage ") + stage;
+          std::ostringstream failure;
+          failure << "diagnostic_id=p5.runtime.loop.failure"
+                  << "; failure_reason=" << loop.failure_reason
+                  << "; " << BuildAxisymmetricStageInvariantReport(stage, stage_axisym);
+          loop.failure_diagnostics = failure.str();
+          return loop;
+        }
+      }
     }
 
     time_s += dt_s;
@@ -2456,9 +2566,13 @@ struct RuntimeStartPoint {
          << "; active_hydro_directions="
          << (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) ? "r,theta"
                                                                      : "r,theta,phi")
+         << "; hydro_phi_sweep_evidence_present="
+         << (loop.hydro_phi_sweep_evidence_present ? "true" : "false")
+         << "; hydro_phi_sweep_executed="
+         << (loop.hydro_phi_sweep_executed ? "true" : "false")
          << "; phi_sweep_executed="
-         << (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality)
-                 ? "false"
+         << (loop.hydro_phi_sweep_evidence_present
+                 ? (loop.hydro_phi_sweep_executed ? "true" : "false")
                  : (loop.h_hydro_phi_sweep_wall_s > 0.0 ? "true" : "false"))
          << "; target_time_trigger_enabled="
          << (TargetTimeEnabled(config) ? "true" : "false")
@@ -2475,6 +2589,10 @@ struct RuntimeStartPoint {
          << (serial_opacity_table_loaded ? "true" : "false")
          << "; serial_implicit_cell_limit=" << kSerialImplicitRuntimeCellLimit;
   AppendAxisymmetricInvariantDiagnostics(report, config, axisym);
+  if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality)) {
+    report << "; axisymmetric_stage_invariant_reports="
+           << loop.axisymmetric_stage_invariant_reports;
+  }
   report << "; global_matrix_diagnostics_present="
          << (loop.global_matrix_diagnostics_present ? "true" : "false")
          << "; global_phi_coupling_count=" << loop.global_phi_coupling_count
@@ -2738,6 +2856,37 @@ struct RuntimeStartPoint {
         loop.failure_diagnostics = stage_result.failure_diagnostics;
         return loop;
       }
+      if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) && stage == 'H') {
+        if (!stage_result.hydro_phi_sweep_evidence_present) {
+          loop.failure_reason = "axisymmetric hydro phi sweep evidence missing";
+          loop.failure_diagnostics =
+              "diagnostic_id=p5.runtime.loop.failure; failure_reason=" +
+              loop.failure_reason;
+          return loop;
+        }
+        if (stage_result.hydro_phi_sweep_executed) {
+          loop.failure_reason = "axisymmetric hydro phi sweep executed";
+          loop.failure_diagnostics =
+              "diagnostic_id=p5.runtime.loop.failure; failure_reason=" +
+              loop.failure_reason;
+          return loop;
+        }
+      }
+      if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality)) {
+        const auto stage_axisym =
+            ReduceAxisymmetricInvariants(MPI_COMM_WORLD, EvaluateAxisymmetricInvariants(local_state));
+        AppendAxisymmetricStageInvariantReport(loop, stage, stage_axisym);
+        if (!stage_axisym.ok) {
+          loop.failure_reason =
+              std::string("axisymmetric invariant violated after stage ") + stage;
+          std::ostringstream failure;
+          failure << "diagnostic_id=p5.runtime.loop.failure"
+                  << "; failure_reason=" << loop.failure_reason
+                  << "; " << BuildAxisymmetricStageInvariantReport(stage, stage_axisym);
+          loop.failure_diagnostics = failure.str();
+          return loop;
+        }
+      }
     }
 
     time_s += dt_s;
@@ -2871,9 +3020,13 @@ struct RuntimeStartPoint {
          << "; active_hydro_directions="
          << (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) ? "r,theta"
                                                                      : "r,theta,phi")
+         << "; hydro_phi_sweep_evidence_present="
+         << (loop.hydro_phi_sweep_evidence_present ? "true" : "false")
+         << "; hydro_phi_sweep_executed="
+         << (loop.hydro_phi_sweep_executed ? "true" : "false")
          << "; phi_sweep_executed="
-         << (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality)
-                 ? "false"
+         << (loop.hydro_phi_sweep_evidence_present
+                 ? (loop.hydro_phi_sweep_executed ? "true" : "false")
                  : (loop.h_hydro_phi_sweep_wall_s > 0.0 ? "true" : "false"))
          << "; target_time_trigger_enabled="
          << (TargetTimeEnabled(config) ? "true" : "false")
@@ -2906,6 +3059,10 @@ struct RuntimeStartPoint {
          << "; gather_metadata_precomputed=true"
          << "; serial_implicit_cell_limit=" << kSerialImplicitRuntimeCellLimit;
   AppendAxisymmetricInvariantDiagnostics(report, config, axisym);
+  if (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality)) {
+    report << "; axisymmetric_stage_invariant_reports="
+           << loop.axisymmetric_stage_invariant_reports;
+  }
   report << "; global_matrix_diagnostics_present="
          << (loop.global_matrix_diagnostics_present ? "true" : "false")
          << "; global_phi_coupling_count=" << loop.global_phi_coupling_count

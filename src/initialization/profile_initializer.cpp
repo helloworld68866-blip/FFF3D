@@ -5,6 +5,7 @@
 #include "radiation/providers/group_blackbody.hpp"
 #include "state/thermodynamics/thermodynamic_recovery.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <sstream>
@@ -43,6 +44,8 @@ ProfileInitializationResult Fail(std::string reason) {
     std::size_t group_count,
     bool blackbody_executed,
     double perturbation_reference_velocity_cm_s,
+    double initial_max_abs_mom_phi,
+    double initial_max_abs_v_phi,
     const std::string& thermodynamic_report) {
   std::ostringstream out;
   out << std::setprecision(17);
@@ -73,6 +76,8 @@ ProfileInitializationResult Fail(std::string reason) {
   }
   out
       << "; canonical_state_initialized=true"
+      << "; initial_max_abs_mom_phi=" << initial_max_abs_mom_phi
+      << "; initial_max_abs_v_phi=" << initial_max_abs_v_phi
       << "; axisymmetric_mom_phi_zero="
       << (dec3d::io::IsAxisymmetric2D(config.mesh.dimensionality) ? "true" : "not_applicable")
       << "; rho_positive=true"
@@ -98,6 +103,31 @@ ProfileInitializationResult Fail(std::string reason) {
       << "; thermodynamic_recovery_report_present="
       << (thermodynamic_report.empty() ? "false" : "true");
   return out.str();
+}
+
+struct InitialPhiMomentumDiagnostics {
+  double max_abs_mom_phi{0.0};
+  double max_abs_v_phi{0.0};
+};
+
+[[nodiscard]] InitialPhiMomentumDiagnostics MeasureInitialPhiMomentum(
+    const dec3d::state::CanonicalState& state) noexcept {
+  InitialPhiMomentumDiagnostics diagnostics;
+  for (std::size_t r = 0u; r < state.layout.radial_cells; ++r) {
+    for (std::size_t t = 0u; t < state.layout.theta_cells; ++t) {
+      for (std::size_t p = 0u; p < state.layout.phi_cells; ++p) {
+        const double mom_phi = state.mom_phi(r, t, p);
+        diagnostics.max_abs_mom_phi =
+            std::max(diagnostics.max_abs_mom_phi, std::abs(mom_phi));
+        const double rho = state.rho(r, t, p);
+        if (rho > 0.0 && std::isfinite(rho)) {
+          diagnostics.max_abs_v_phi =
+              std::max(diagnostics.max_abs_v_phi, std::abs(mom_phi / rho));
+        }
+      }
+    }
+  }
+  return diagnostics;
 }
 
 [[nodiscard]] dec3d::core::AuthoritativeFieldMask InitialWriteMask() noexcept {
@@ -299,6 +329,7 @@ ProfileInitializationResult InitializeFromRadialProfile(
     return Fail(recovery.failure_reason.empty() ? "thermodynamic recovery failed"
                                                 : recovery.failure_reason);
   }
+  const auto phi_momentum = MeasureInitialPhiMomentum(state);
 
   ProfileInitializationResult result;
   result.success = true;
@@ -312,6 +343,8 @@ ProfileInitializationResult InitializeFromRadialProfile(
                   group_count,
                   blackbody_executed,
                   perturbation_reference_velocity_cm_s,
+                  phi_momentum.max_abs_mom_phi,
+                  phi_momentum.max_abs_v_phi,
                   recovery.recovery_diagnostics);
   return result;
 }
@@ -326,6 +359,8 @@ bool ValidateProfileInitializationDiagnostics(
          Contains(line, "profile_file_source=command_line.profile") &&
          Contains(line, "implicit_profile_used=false") &&
          Contains(line, "canonical_state_initialized=true") &&
+         Contains(line, "initial_max_abs_mom_phi=") &&
+         Contains(line, "initial_max_abs_v_phi=") &&
          Contains(line, "axisymmetric_mom_phi_zero=") &&
          Contains(line, "rho_positive=true") &&
          Contains(line, "e_electron_positive=true") &&

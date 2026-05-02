@@ -379,7 +379,15 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
               std::string::npos);
   DEC3D_CHECK(axisym_result.report_line.find("phi_sweep_executed=false") !=
               std::string::npos);
+  DEC3D_CHECK(axisym_result.report_line.find("hydro_phi_sweep_evidence_present=true") !=
+              std::string::npos);
+  DEC3D_CHECK(axisym_result.report_line.find("hydro_phi_sweep_executed=false") !=
+              std::string::npos);
   DEC3D_CHECK(axisym_result.report_line.find("h_hydro_phi_sweep_wall_s=0") !=
+              std::string::npos);
+  DEC3D_CHECK(axisym_result.report_line.find("axisymmetric_stage_invariant_reports={") !=
+              std::string::npos);
+  DEC3D_CHECK(axisym_result.report_line.find("stage_id=H; axisymmetric_stage_invariant_ok=true") !=
               std::string::npos);
   DEC3D_CHECK(axisym_result.report_line.find("max_abs_mom_phi=") != std::string::npos);
   DEC3D_CHECK(axisym_result.report_line.find("max_abs_v_phi=") != std::string::npos);

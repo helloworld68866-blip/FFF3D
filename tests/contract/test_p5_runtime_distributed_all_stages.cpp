@@ -30,6 +30,24 @@ std::filesystem::path TempRoot() {
   return std::filesystem::temp_directory_path() / "dec3d_p5_runtime_distributed_all_stages";
 }
 
+std::filesystem::path RepoRoot() {
+  return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+}
+
+void ReplaceLineValue(std::string& text,
+                      const std::string& key,
+                      const std::string& value) {
+  const auto begin = text.find(key);
+  if (begin == std::string::npos) {
+    dec3d::test::Fail("replace line key", __FILE__, __LINE__, key);
+  }
+  auto end = text.find('\n', begin);
+  if (end == std::string::npos) {
+    end = text.size();
+  }
+  text.replace(begin, end - begin, key + value);
+}
+
 void RequireTwoRanks() {
   int size = 0;
   MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -180,18 +198,18 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
     const auto axisym_output = axisym_root / "output";
     if (rank == 0) {
       std::filesystem::create_directories(axisym_root);
-      std::filesystem::copy_file("F:/dec3d/cases/axisymmetric_2d_noale_allstages_smoke.in",
+      const auto repo_root = RepoRoot();
+      std::filesystem::copy_file(repo_root / "cases" /
+                                     "axisymmetric_2d_noale_allstages_smoke.in",
                                  axisym_deck,
                                  std::filesystem::copy_options::overwrite_existing);
-      std::filesystem::copy_file("F:/dec3d/cases/axisymmetric_2d_noale_smoke.pro",
+      std::filesystem::copy_file(repo_root / "cases" / "axisymmetric_2d_noale_smoke.pro",
                                  axisym_profile,
                                  std::filesystem::copy_options::overwrite_existing);
       auto axisym_deck_text = ReadText(axisym_deck);
-      const auto old_output =
-          std::string("F:/dec3d/analysis/output/axisymmetric_2d_noale_allstages_smoke");
-      axisym_deck_text.replace(axisym_deck_text.find(old_output),
-                               old_output.size(),
-                               axisym_output.generic_string());
+      ReplaceLineValue(axisym_deck_text,
+                       "output_dir = ",
+                       axisym_output.generic_string());
       WriteText(axisym_deck, axisym_deck_text);
     }
     MPI_Barrier(MPI_COMM_WORLD);
@@ -215,6 +233,15 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
                 std::string::npos);
     DEC3D_CHECK(axisym_result.report_line.find("phi_sweep_executed=false") !=
                 std::string::npos);
+    DEC3D_CHECK(axisym_result.report_line.find("hydro_phi_sweep_evidence_present=true") !=
+                std::string::npos);
+    DEC3D_CHECK(axisym_result.report_line.find("hydro_phi_sweep_executed=false") !=
+                std::string::npos);
+    for (const auto stage : {"H", "T", "E", "R", "A"}) {
+      const auto token =
+          std::string("stage_id=") + stage + "; axisymmetric_stage_invariant_ok=true";
+      DEC3D_CHECK(axisym_result.report_line.find(token) != std::string::npos);
+    }
     DEC3D_CHECK(axisym_result.report_line.find("axisymmetric_invariant_ok=true") !=
                 std::string::npos);
     DEC3D_CHECK(axisym_result.report_line.find("global_phi_coupling_count=0") !=

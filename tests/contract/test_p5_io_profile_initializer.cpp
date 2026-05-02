@@ -299,6 +299,10 @@ r_um rho_g_cm3 Te_keV Ti_keV vr_cm_s vt_cm_s vp_cm_s epsilon_alpha_erg_cm3 radia
                 std::string::npos);
     DEC3D_CHECK(result.report_line.find("axisymmetric_mom_phi_zero=true") !=
                 std::string::npos);
+    DEC3D_CHECK(result.report_line.find("initial_max_abs_mom_phi=0") !=
+                std::string::npos);
+    DEC3D_CHECK(result.report_line.find("initial_max_abs_v_phi=0") !=
+                std::string::npos);
     DEC3D_CHECK(result.state.layout.phi_cells == 1u);
     for (std::size_t r = 0; r < result.state.layout.radial_cells; ++r) {
       for (std::size_t t = 0; t < result.state.layout.theta_cells; ++t) {
